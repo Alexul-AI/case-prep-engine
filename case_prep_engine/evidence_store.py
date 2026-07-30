@@ -122,10 +122,37 @@ UNVERIFIED_TIMESTAMP_SENTINELS = PLACEHOLDER_TEXT_VALUES | frozenset(
 
 _CLAIM_ID_SPLIT_RE = re.compile(r"[;/]")
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
+_DRIVE_FILEID_PREFIX_RE = re.compile(r"^drive\s*file\s*id\s*", re.IGNORECASE)
+_ID_LIKE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
 def _is_placeholder(value: str) -> bool:
     return value.strip().lower() in PLACEHOLDER_TEXT_VALUES
+
+
+def looks_like_stable_identifier(value: str) -> bool:
+    """Heuristic: does this source_ref look like an id/URL, not a prose note?
+
+    Not a strict format validator -- real registers use a few different
+    conventions ("Drive fileId <id>", a bare Drive file id, a URL). The
+    actual danger this guards against is prose accidentally ending up in
+    an identity field: two unrelated documents both getting the free-text
+    note "needs_ocr per both parallel passes" as their source_ref made
+    EvidenceRow.key() treat them as the same document (a real bug found in
+    this project's own register). A multi-word sentence is the signal to
+    catch here, not a specific ID format to enforce.
+    """
+    text = value.strip()
+    if not text:
+        return False
+    if _URL_RE.match(text):
+        return True
+    remainder = _DRIVE_FILEID_PREFIX_RE.sub("", text).strip()
+    words = remainder.split()
+    if len(words) != 1:
+        return False
+    return bool(_ID_LIKE_TOKEN_RE.match(words[0]))
 
 
 def parse_verified_utc(value: str) -> datetime | None:
@@ -239,6 +266,11 @@ class EvidencePayload:
     source_location: str = ""
     translation_ru: str = ""
     payload_hash: str = ""
+    # Free-text notes about the source belong here, never in source_ref --
+    # source_ref participates in EvidenceRow identity (see key()) and must
+    # never be prose. This field exists specifically so a note like
+    # "needs_ocr per both parallel passes" has somewhere honest to live.
+    source_note: str = ""
 
 
 def build_evidence_payload(
@@ -252,6 +284,7 @@ def build_evidence_payload(
     verified_utc: str,
     source_location: str = "",
     translation_ru: str = "",
+    source_note: str = "",
 ) -> EvidencePayload:
     """Construct an EvidencePayload, deriving verified_precision and payload_hash.
 
@@ -274,6 +307,7 @@ def build_evidence_payload(
         payload_hash=compute_payload_hash(
             claim_id, source_ref, payload_type, hebrew_verbatim
         ),
+        source_note=source_note,
     )
 
 
@@ -308,11 +342,17 @@ class EvidenceRow:
         payload.source_ref (a Drive file id or similar) since a title can
         be re-transliterated or re-punctuated between register versions;
         falls back to the document title when source_ref is a placeholder
-        like "unknown".
+        like "unknown", or when it doesn't look like a real identifier at
+        all -- a free-text note accidentally used as source_ref (the C01
+        bug: two different documents both got the note "needs_ocr per both
+        parallel passes" as their source_ref, and this identity check
+        treated that as if they were the same document) must not be
+        trusted as identity just because it's non-empty.
         """
         ref = self.payload.source_ref.strip()
-        identity = ref if ref and not _is_placeholder(ref) else self.document.strip()
-        return (identity, self.payload.claim_id.strip())
+        if ref and not _is_placeholder(ref) and looks_like_stable_identifier(ref):
+            return (ref, self.payload.claim_id.strip())
+        return (self.document.strip(), self.payload.claim_id.strip())
 
 
 def validate_row(row: EvidenceRow) -> list[str]:
@@ -338,6 +378,19 @@ def validate_row(row: EvidenceRow) -> list[str]:
         problems.append(f"unknown payload_type: {payload.payload_type!r}")
     if payload.verified_precision not in VERIFIED_PRECISIONS:
         problems.append(f"unknown verified_precision: {payload.verified_precision!r}")
+
+    # Applies unconditionally, not just for the strict output_gates below --
+    # a garbled identity field breaks resolve_current_state's grouping
+    # regardless of what gate the row happens to have.
+    if not _is_placeholder(payload.source_ref) and not looks_like_stable_identifier(
+        payload.source_ref
+    ):
+        problems.append(
+            f"payload.source_ref {payload.source_ref!r} doesn't look like a "
+            "Drive id/URL/stable identifier -- looks like a free-text note "
+            "instead, which is not safe to use as document identity. Use a "
+            "placeholder (e.g. '—') and put the note in payload.source_note."
+        )
 
     allowed_gates = ALLOWED_GATES_FOR_CLAIM_SUPPORT.get(row.claim_support_status)
     if allowed_gates is not None and row.output_gate not in allowed_gates:
@@ -403,6 +456,7 @@ def validate_row(row: EvidenceRow) -> list[str]:
 _CSV_COLUMNS = [
     "document",
     "source_ref",
+    "source_note",
     "related_claims",
     "text_quality_status",
     "claim_support_status",
@@ -443,6 +497,7 @@ def import_csv(path: str | Path) -> list[EvidenceRow]:
                     verification_method=values["verification_method"],
                     verified_by_actor=values["verified_by_actor"],
                     verified_utc=values["verified_utc"],
+                    source_note=values["source_note"],
                 )
                 rows.append(
                     EvidenceRow(

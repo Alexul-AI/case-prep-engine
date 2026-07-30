@@ -11,6 +11,7 @@ from .evidence_store import (
     import_csv,
     infer_payload_type,
     infer_verified_precision,
+    looks_like_stable_identifier,
     resolve_current_state,
     validate_row,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "import_csv",
     "infer_payload_type",
     "infer_verified_precision",
+    "looks_like_stable_identifier",
     "resolve_current_state",
     "validate_row",
 ]

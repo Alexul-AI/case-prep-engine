@@ -157,20 +157,17 @@ class RealRegisterEvidenceMatrixTests(unittest.TestCase):
         self.assertEqual(len(matrix["C09"].supporting), 2)
 
         # C01 (Rambam 2009 + IDF injury report): both rows are needs_ocr/
-        # blocked and must never show up as support. They currently land in
-        # `conflicts` rather than `unresolved`, for a real, separate reason
-        # worth knowing about: both rows share the literal source_ref text
-        # "needs_ocr per both parallel passes" (a status note, not a real
-        # Drive id) -- key() treats that as a real, shared identity, so the
-        # two different physical documents collapse into one group, and
-        # since neither has a real verified_utc, resolve_current_state
-        # correctly calls that a conflict rather than guessing. This is a
-        # register data-quality gap (fix: give each row a real source_ref,
-        # or a placeholder value that key() already recognizes as such,
-        # e.g. "—"), not a bug in build_evidence_matrix.
+        # blocked and must never show up as support. This used to land in
+        # `conflicts` instead of `unresolved`, because both rows shared the
+        # literal source_ref text "needs_ocr per both parallel passes" (a
+        # status note, not a real Drive id) -- a real register data bug,
+        # now fixed (each row has its own real Drive fileId, the note moved
+        # to source_note). Two genuinely separate unresolved documents now
+        # resolve as two separate, non-conflicting entries.
         self.assertIn("C01", matrix)
         self.assertFalse(matrix["C01"].has_support)
-        self.assertTrue(matrix["C01"].has_unresolved_conflict)
+        self.assertFalse(matrix["C01"].has_unresolved_conflict)
+        self.assertEqual(len(matrix["C01"].unresolved), 2)
 
 
 if __name__ == "__main__":

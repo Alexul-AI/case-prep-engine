@@ -11,6 +11,7 @@ from case_prep_engine.evidence_store import (
     import_csv,
     infer_payload_type,
     infer_verified_precision,
+    looks_like_stable_identifier,
     parse_verified_utc,
     resolve_current_state,
     validate_row,
@@ -34,6 +35,7 @@ _PAYLOAD_FIELD_NAMES = {
     "verified_utc",
     "source_location",
     "translation_ru",
+    "source_note",
 }
 
 
@@ -196,6 +198,52 @@ class ValidateRowTests(unittest.TestCase):
         problems = validate_row(make_row(verified_utc="2026-07-29"))
         self.assertEqual(problems, [])
 
+    # --- regression: source-identity hygiene (the C01 bug class) ---
+    def test_prose_source_ref_is_flagged_even_on_a_blocked_row(self):
+        # Applies unconditionally, not just to the strict output gates --
+        # a blocked/unresolved row can still corrupt identity grouping.
+        problems = validate_row(
+            make_row(
+                claim_support_status="metadata_only",
+                output_gate="blocked",
+                source_ref="needs_ocr per both parallel passes",
+            )
+        )
+        self.assertTrue(any("doesn't look like" in p for p in problems))
+
+    def test_placeholder_source_ref_is_not_flagged_as_prose(self):
+        problems = validate_row(
+            make_row(
+                claim_support_status="metadata_only",
+                output_gate="blocked",
+                source_ref="—",
+            )
+        )
+        self.assertFalse(any("doesn't look like" in p for p in problems))
+
+
+class LooksLikeStableIdentifierTests(unittest.TestCase):
+    def test_drive_fileid_prefixed_form_is_an_identifier(self):
+        self.assertTrue(
+            looks_like_stable_identifier("Drive fileId 1USNHDNiERb6Mg6UCra9pNDOabbwi5uCL")
+        )
+
+    def test_bare_id_is_an_identifier(self):
+        self.assertTrue(looks_like_stable_identifier("1USNHDNiERb6Mg6UCra9pNDOabbwi5uCL"))
+
+    def test_url_is_an_identifier(self):
+        self.assertTrue(looks_like_stable_identifier("https://drive.google.com/file/d/abc123"))
+
+    def test_multiword_note_is_not_an_identifier(self):
+        # The actual real-world bug: this exact string was used as
+        # source_ref for two different documents in the real register.
+        self.assertFalse(
+            looks_like_stable_identifier("needs_ocr per both parallel passes")
+        )
+
+    def test_empty_string_is_not_an_identifier(self):
+        self.assertFalse(looks_like_stable_identifier(""))
+
 
 class ParseVerifiedUtcTests(unittest.TestCase):
     def test_parses_iso_timestamp(self):
@@ -287,6 +335,35 @@ class ResolveCurrentStateTests(unittest.TestCase):
         b = make_row(source_ref="drive-id-123", document="Renamed Title")
         resolved = resolve_current_state([a, b])
         self.assertEqual(len(resolved), 1)
+
+    # --- regression: source-identity hygiene, the exact C01 scenario ---
+    def test_shared_prose_source_ref_does_not_collapse_different_documents(self):
+        # Two genuinely different documents that both happen to carry the
+        # same free-text note as source_ref (the real C01 bug: "needs_ocr
+        # per both parallel passes" on both a hospitalization summary and
+        # a separate injury report) must resolve as two separate entries,
+        # falling back to their own document titles -- not one entry that
+        # silently drops one of them.
+        a = make_row(
+            document="סיכום אשפוז",
+            claim_id="C01",
+            source_ref="needs_ocr per both parallel passes",
+            claim_support_status="metadata_only",
+            output_gate="blocked",
+        )
+        b = make_row(
+            document="IDF injury report",
+            claim_id="C01",
+            source_ref="needs_ocr per both parallel passes",
+            claim_support_status="metadata_only",
+            output_gate="blocked",
+        )
+        resolved = resolve_current_state([a, b])
+        self.assertEqual(len(resolved), 2)
+        self.assertIn(("סיכום אשפוז", "C01"), resolved)
+        self.assertIn(("IDF injury report", "C01"), resolved)
+        self.assertFalse(resolved[("סיכום אשפוז", "C01")].conflict)
+        self.assertFalse(resolved[("IDF injury report", "C01")].conflict)
 
     def test_different_claims_on_same_document_do_not_collapse(self):
         c14 = make_row(
