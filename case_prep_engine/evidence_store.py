@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,6 +96,21 @@ GATES_REQUIRING_PAYLOAD = frozenset(
 # requirements that happen to apply to the same gates today.
 GATES_REQUIRING_PROVENANCE = GATES_REQUIRING_PAYLOAD
 
+PAYLOAD_TYPES = frozenset(
+    {"quote", "paraphrase", "negative_finding", "contradiction", "none"}
+)
+
+# claim_support_status -> the payload_type it asserts. Anything not listed
+# here has no real payload yet ("none"), not an invalid/unknown type.
+_PAYLOAD_TYPE_BY_CLAIM_SUPPORT: dict[str, str] = {
+    "supported_by_quote": "quote",
+    "supported_by_paraphrase": "paraphrase",
+    "checked_not_supported": "negative_finding",
+    "contradicted": "contradiction",
+}
+
+VERIFIED_PRECISIONS = frozenset({"instant", "date", "unknown"})
+
 # Free-text values seen in real registers that mean "not actually filled in",
 # for fields other than verified_utc (which has its own sentinel set below,
 # since it also needs to reject non-timestamp text like "after-v4-snapshot").
@@ -104,6 +121,7 @@ UNVERIFIED_TIMESTAMP_SENTINELS = PLACEHOLDER_TEXT_VALUES | frozenset(
 )
 
 _CLAIM_ID_SPLIT_RE = re.compile(r"[;/]")
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _is_placeholder(value: str) -> bool:
@@ -132,6 +150,34 @@ def parse_verified_utc(value: str) -> datetime | None:
     return parsed
 
 
+def infer_verified_precision(verified_utc: str) -> str:
+    """Classify a verified_utc string as 'instant', 'date', or 'unknown'.
+
+    Policy (per docs/case_prep_status_model_v3_provenance.md discussion): a
+    date-only verification like "2026-07-29" is real provenance and stays
+    valid for allowed_as_quote etc. -- it is not rejected. It is *weaker*
+    for ordering: resolve_current_state can't tell two same-day date-only
+    verifications apart and must flag a conflict instead of picking one
+    (they parse to the same UTC midnight and tie under existing sort
+    logic). A future automated multi-agent sync path should require
+    'instant', but nothing in this codebase enforces that yet.
+    """
+    if parse_verified_utc(verified_utc) is None:
+        return "unknown"
+    if _DATE_ONLY_RE.fullmatch(verified_utc.strip()):
+        return "date"
+    return "instant"
+
+
+def infer_payload_type(claim_support_status: str) -> str:
+    """Map a claim_support_status to the payload_type it asserts.
+
+    "none" (not an unknown/invalid value) means this row hasn't reached a
+    real payload yet -- e.g. metadata_only or not_checked.
+    """
+    return _PAYLOAD_TYPE_BY_CLAIM_SUPPORT.get(claim_support_status, "none")
+
+
 def _split_claim_ids(raw: str) -> list[str]:
     """Split a free-text related_claims cell into individual claim ids.
 
@@ -142,6 +188,93 @@ def _split_claim_ids(raw: str) -> list[str]:
     parts = [p.strip() for p in _CLAIM_ID_SPLIT_RE.split(raw)]
     parts = [p for p in parts if p]
     return parts or [raw.strip()]
+
+
+def _normalize_for_hash(text: str) -> str:
+    # NFC-normalize so Hebrew text extracted by different OCR/extraction
+    # tools with different combining-character conventions still hashes the
+    # same when the visible content is identical.
+    return unicodedata.normalize("NFC", text.strip())
+
+
+def compute_payload_hash(
+    claim_id: str, source_ref: str, payload_type: str, hebrew_verbatim: str
+) -> str:
+    """Hash of a payload's identity-and-content core.
+
+    Deliberately excludes provenance fields (actor, method, timestamp) --
+    two different verification passes that land on the same quote for the
+    same claim should hash identically, so this can eventually support
+    dedup/agreement detection across sessions.
+    """
+    parts = [
+        _normalize_for_hash(claim_id),
+        _normalize_for_hash(source_ref),
+        _normalize_for_hash(payload_type),
+        _normalize_for_hash(hebrew_verbatim),
+    ]
+    normalized = "\x1f".join(parts)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class EvidencePayload:
+    """The actual evidentiary content: what was found, where, and how.
+
+    This is the center of gravity, not an attachment on EvidenceRow -- the
+    Hebrew verbatim text, its source, and its provenance travel together as
+    one typed object. See docs/provenance_model_v3_addendum_inline_payload.md
+    for why the canonical payload must travel with the row rather than live
+    in a separate not-yet-built shared store.
+    """
+
+    payload_type: str  # quote | paraphrase | negative_finding | contradiction | none
+    hebrew_verbatim: str
+    source_ref: str
+    claim_id: str
+    verification_method: str
+    verified_by_actor: str
+    verified_utc: str
+    verified_precision: str  # instant | date | unknown
+    source_location: str = ""
+    translation_ru: str = ""
+    payload_hash: str = ""
+
+
+def build_evidence_payload(
+    *,
+    payload_type: str,
+    hebrew_verbatim: str,
+    source_ref: str,
+    claim_id: str,
+    verification_method: str,
+    verified_by_actor: str,
+    verified_utc: str,
+    source_location: str = "",
+    translation_ru: str = "",
+) -> EvidencePayload:
+    """Construct an EvidencePayload, deriving verified_precision and payload_hash.
+
+    Preferred over calling EvidencePayload(...) directly, so callers never
+    have to remember to keep the derived fields in sync with the inputs
+    themselves (a direct EvidencePayload(...) call is still useful in tests
+    that deliberately want a stale/wrong hash).
+    """
+    return EvidencePayload(
+        payload_type=payload_type,
+        hebrew_verbatim=hebrew_verbatim,
+        source_ref=source_ref,
+        claim_id=claim_id,
+        verification_method=verification_method,
+        verified_by_actor=verified_by_actor,
+        verified_utc=verified_utc,
+        verified_precision=infer_verified_precision(verified_utc),
+        source_location=source_location,
+        translation_ru=translation_ru,
+        payload_hash=compute_payload_hash(
+            claim_id, source_ref, payload_type, hebrew_verbatim
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -157,16 +290,11 @@ class EvidenceRow:
     """
 
     document: str
-    source_ref: str
-    claim_id: str
     text_quality_status: str
     claim_support_status: str
     output_gate: str
     staleness_status: str
-    verified_by_actor: str
-    verification_method: str
-    verified_utc: str
-    evidence_payload_hebrew_verbatim: str
+    payload: EvidencePayload
     track: str = ""
     priority_in_track: str = ""
     row_written_utc: str = field(
@@ -176,14 +304,15 @@ class EvidenceRow:
     def key(self) -> tuple[str, str]:
         """Stable identity for grouping rows about "the same claim".
 
-        (document identity, claim_id). Document identity prefers source_ref
-        (a Drive file id or similar) since a title can be re-transliterated
-        or re-punctuated between register versions; falls back to the
-        document title when source_ref is a placeholder like "unknown".
+        (document identity, claim_id). Document identity prefers
+        payload.source_ref (a Drive file id or similar) since a title can
+        be re-transliterated or re-punctuated between register versions;
+        falls back to the document title when source_ref is a placeholder
+        like "unknown".
         """
-        ref = self.source_ref.strip()
+        ref = self.payload.source_ref.strip()
         identity = ref if ref and not _is_placeholder(ref) else self.document.strip()
-        return (identity, self.claim_id.strip())
+        return (identity, self.payload.claim_id.strip())
 
 
 def validate_row(row: EvidenceRow) -> list[str]:
@@ -197,6 +326,7 @@ def validate_row(row: EvidenceRow) -> list[str]:
     hebrew_text_quality.py).
     """
     problems: list[str] = []
+    payload = row.payload
 
     if row.text_quality_status not in TEXT_QUALITY_STATUSES:
         problems.append(f"unknown text_quality_status: {row.text_quality_status!r}")
@@ -204,6 +334,10 @@ def validate_row(row: EvidenceRow) -> list[str]:
         problems.append(f"unknown claim_support_status: {row.claim_support_status!r}")
     if row.output_gate not in OUTPUT_GATE_STATUSES:
         problems.append(f"unknown output_gate: {row.output_gate!r}")
+    if payload.payload_type not in PAYLOAD_TYPES:
+        problems.append(f"unknown payload_type: {payload.payload_type!r}")
+    if payload.verified_precision not in VERIFIED_PRECISIONS:
+        problems.append(f"unknown verified_precision: {payload.verified_precision!r}")
 
     allowed_gates = ALLOWED_GATES_FOR_CLAIM_SUPPORT.get(row.claim_support_status)
     if allowed_gates is not None and row.output_gate not in allowed_gates:
@@ -214,10 +348,10 @@ def validate_row(row: EvidenceRow) -> list[str]:
         )
 
     if row.output_gate in GATES_REQUIRING_PAYLOAD:
-        if not row.evidence_payload_hebrew_verbatim.strip():
+        if not payload.hebrew_verbatim.strip():
             problems.append(
                 f"output_gate {row.output_gate!r} requires a non-empty "
-                "evidence_payload_hebrew_verbatim"
+                "payload.hebrew_verbatim"
             )
         if row.text_quality_status != "text_qa_passed":
             problems.append(
@@ -227,25 +361,40 @@ def validate_row(row: EvidenceRow) -> list[str]:
             )
 
     if row.output_gate in GATES_REQUIRING_PROVENANCE:
-        if _is_placeholder(row.source_ref):
+        if _is_placeholder(payload.source_ref):
             problems.append(
-                f"output_gate {row.output_gate!r} requires a real source_ref, "
-                f"got {row.source_ref!r}"
+                f"output_gate {row.output_gate!r} requires a real "
+                f"payload.source_ref, got {payload.source_ref!r}"
             )
-        if _is_placeholder(row.verification_method):
-            problems.append(
-                f"output_gate {row.output_gate!r} requires a non-placeholder "
-                f"verification_method, got {row.verification_method!r}"
-            )
-        if _is_placeholder(row.verified_by_actor):
+        if _is_placeholder(payload.verification_method):
             problems.append(
                 f"output_gate {row.output_gate!r} requires a non-placeholder "
-                f"verified_by_actor, got {row.verified_by_actor!r}"
+                f"payload.verification_method, got {payload.verification_method!r}"
             )
-        if parse_verified_utc(row.verified_utc) is None:
+        if _is_placeholder(payload.verified_by_actor):
+            problems.append(
+                f"output_gate {row.output_gate!r} requires a non-placeholder "
+                f"payload.verified_by_actor, got {payload.verified_by_actor!r}"
+            )
+        # date-only precision is deliberately still accepted here (see
+        # infer_verified_precision's docstring) -- only "unknown" (no
+        # parseable timestamp at all) is rejected.
+        if payload.verified_precision == "unknown":
             problems.append(
                 f"output_gate {row.output_gate!r} requires a parseable "
-                f"verified_utc, got {row.verified_utc!r}"
+                f"payload.verified_utc, got {payload.verified_utc!r}"
+            )
+
+    if payload.payload_hash:
+        expected_hash = compute_payload_hash(
+            payload.claim_id, payload.source_ref, payload.payload_type,
+            payload.hebrew_verbatim,
+        )
+        if payload.payload_hash != expected_hash:
+            problems.append(
+                "payload_hash does not match its own claim_id/source_ref/"
+                "payload_type/hebrew_verbatim -- payload was edited after "
+                "the hash was computed, or constructed inconsistently"
             )
 
     return problems
@@ -271,20 +420,42 @@ _CSV_COLUMNS = [
 def import_csv(path: str | Path) -> list[EvidenceRow]:
     """Load a v6-style ocr_gap_register CSV into typed EvidenceRow records.
 
+    Backward-compatible with the existing CSV schema -- there is no
+    payload_type/verified_precision/payload_hash column, those are derived
+    from claim_support_status and verified_utc via build_evidence_payload().
+
     A CSV row whose related_claims cell names more than one claim (e.g.
     "C14; C15") becomes one EvidenceRow per claim id, all other fields
-    shared -- see EvidenceRow's docstring for why. Missing optional columns
-    default to empty string, so this tolerates earlier register versions
-    (v2/v4/v5) that lack some fields.
+    shared -- see EvidenceRow's docstring for why.
     """
     rows: list[EvidenceRow] = []
     with open(path, encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         for raw in reader:
             values = {name: raw.get(name, "").strip() for name in _CSV_COLUMNS}
-            related_claims_raw = values.pop("related_claims")
-            for claim_id in _split_claim_ids(related_claims_raw):
-                rows.append(EvidenceRow(claim_id=claim_id, **values))
+            claim_support_status = values["claim_support_status"]
+            for claim_id in _split_claim_ids(values["related_claims"]):
+                payload = build_evidence_payload(
+                    payload_type=infer_payload_type(claim_support_status),
+                    hebrew_verbatim=values["evidence_payload_hebrew_verbatim"],
+                    source_ref=values["source_ref"],
+                    claim_id=claim_id,
+                    verification_method=values["verification_method"],
+                    verified_by_actor=values["verified_by_actor"],
+                    verified_utc=values["verified_utc"],
+                )
+                rows.append(
+                    EvidenceRow(
+                        document=values["document"],
+                        text_quality_status=values["text_quality_status"],
+                        claim_support_status=claim_support_status,
+                        output_gate=values["output_gate"],
+                        staleness_status=values["staleness_status"],
+                        payload=payload,
+                        track=values["track"],
+                        priority_in_track=values["priority_in_track"],
+                    )
+                )
     return rows
 
 
@@ -317,7 +488,9 @@ class EvidenceStore:
                 line = line.strip()
                 if not line:
                     continue
-                rows.append(EvidenceRow(**json.loads(line)))
+                data = json.loads(line)
+                data["payload"] = EvidencePayload(**data["payload"])
+                rows.append(EvidenceRow(**data))
         return rows
 
 
@@ -342,9 +515,12 @@ def resolve_current_state(
     Implements the Conflict Rule from case_prep_status_model_v3_provenance.md:
     prefer the row with the latest parseable verified_utc. If a winner can't
     be determined responsibly from timestamps alone -- none of the
-    candidates have a real verified_utc, or the newest timestamp is tied --
-    the group is flagged as a conflict instead of silently picking one, per
-    the C04 lesson that "current" without real provenance is not a fact.
+    candidates have a real verified_utc, or the newest timestamps tie -- the
+    group is flagged as a conflict instead of silently picking one, per the
+    C04 lesson that "current" without real provenance is not a fact. Two
+    date-only verifications on the same calendar day parse to the same UTC
+    midnight and tie under this same logic -- date precision alone cannot
+    order same-day events, so that's a conflict too, not a coin flip.
     """
     groups: dict[tuple[str, str], list[EvidenceRow]] = {}
     for row in rows:
@@ -352,7 +528,7 @@ def resolve_current_state(
 
     resolved: dict[tuple[str, str], ResolvedEvidence] = {}
     for key, group in groups.items():
-        dated = [(parse_verified_utc(r.verified_utc), r) for r in group]
+        dated = [(parse_verified_utc(r.payload.verified_utc), r) for r in group]
         with_ts = [(ts, r) for ts, r in dated if ts is not None]
 
         if len(group) == 1:

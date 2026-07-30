@@ -3,9 +3,14 @@ import unittest
 from pathlib import Path
 
 from case_prep_engine.evidence_store import (
+    EvidencePayload,
     EvidenceRow,
     EvidenceStore,
+    build_evidence_payload,
+    compute_payload_hash,
     import_csv,
+    infer_payload_type,
+    infer_verified_precision,
     parse_verified_utc,
     resolve_current_state,
     validate_row,
@@ -17,23 +22,122 @@ REAL_REGISTER_CSV = (
     / "ocr_gap_register_v6_hebrew_payload.csv"
 )
 
+# Which make_row() kwargs belong to the nested EvidencePayload rather than
+# the EvidenceRow itself -- lets test call sites stay flat.
+_PAYLOAD_FIELD_NAMES = {
+    "payload_type",
+    "hebrew_verbatim",
+    "source_ref",
+    "claim_id",
+    "verification_method",
+    "verified_by_actor",
+    "verified_utc",
+    "source_location",
+    "translation_ru",
+}
+
 
 def make_row(**overrides) -> EvidenceRow:
-    defaults = dict(
+    row_defaults = dict(
         document="Test Document",
-        source_ref="drive-id-1",
-        claim_id="C99",
         text_quality_status="text_qa_passed",
         claim_support_status="supported_by_quote",
         output_gate="allowed_as_quote",
         staleness_status="fresh",
-        verified_by_actor="tester",
-        verification_method="manual_read",
-        verified_utc="2026-01-01T00:00:00+00:00",
-        evidence_payload_hebrew_verbatim="דוגמת טקסט",
     )
-    defaults.update(overrides)
-    return EvidenceRow(**defaults)
+    payload_defaults = dict(
+        payload_type="quote",
+        hebrew_verbatim="דוגמת טקסט",
+        source_ref="drive-id-1",
+        claim_id="C99",
+        verification_method="manual_read",
+        verified_by_actor="tester",
+        verified_utc="2026-01-01T00:00:00+00:00",
+    )
+    for key, value in overrides.items():
+        if key in _PAYLOAD_FIELD_NAMES:
+            payload_defaults[key] = value
+        else:
+            row_defaults[key] = value
+    return EvidenceRow(payload=build_evidence_payload(**payload_defaults), **row_defaults)
+
+
+class EvidencePayloadTests(unittest.TestCase):
+    def test_build_evidence_payload_derives_precision_and_hash(self):
+        payload = build_evidence_payload(
+            payload_type="quote",
+            hebrew_verbatim="טקסט לדוגמה",
+            source_ref="drive-1",
+            claim_id="C08",
+            verification_method="drive_fetch",
+            verified_by_actor="tester",
+            verified_utc="2026-07-29",
+        )
+        self.assertEqual(payload.verified_precision, "date")
+        self.assertEqual(
+            payload.payload_hash,
+            compute_payload_hash("C08", "drive-1", "quote", "טקסט לדוגמה"),
+        )
+
+    def test_identical_core_content_hashes_the_same_regardless_of_provenance(self):
+        a = build_evidence_payload(
+            payload_type="quote", hebrew_verbatim="טקסט", source_ref="drive-1",
+            claim_id="C08", verification_method="drive_fetch",
+            verified_by_actor="agent-a", verified_utc="2026-07-29",
+        )
+        b = build_evidence_payload(
+            payload_type="quote", hebrew_verbatim="טקסט", source_ref="drive-1",
+            claim_id="C08", verification_method="manual_read",
+            verified_by_actor="agent-b", verified_utc="2026-08-01T10:00:00+00:00",
+        )
+        self.assertEqual(a.payload_hash, b.payload_hash)
+
+    def test_different_verbatim_text_hashes_differently(self):
+        a = build_evidence_payload(
+            payload_type="quote", hebrew_verbatim="טקסט א", source_ref="drive-1",
+            claim_id="C08", verification_method="x", verified_by_actor="x",
+            verified_utc="2026-07-29",
+        )
+        b = build_evidence_payload(
+            payload_type="quote", hebrew_verbatim="טקסט ב", source_ref="drive-1",
+            claim_id="C08", verification_method="x", verified_by_actor="x",
+            verified_utc="2026-07-29",
+        )
+        self.assertNotEqual(a.payload_hash, b.payload_hash)
+
+    def test_tampered_hash_is_detected_by_validate_row(self):
+        payload = build_evidence_payload(
+            payload_type="quote", hebrew_verbatim="טקסט מקורי", source_ref="drive-1",
+            claim_id="C08", verification_method="x", verified_by_actor="x",
+            verified_utc="2026-07-29",
+        )
+        # Simulate the hebrew_verbatim being edited after the hash was computed.
+        tampered = EvidencePayload(**{**payload.__dict__, "hebrew_verbatim": "טקסט שונה"})
+        row = make_row()
+        object.__setattr__(row, "payload", tampered)
+        problems = validate_row(row)
+        self.assertTrue(any("payload_hash does not match" in p for p in problems))
+
+
+class InferPrecisionAndPayloadTypeTests(unittest.TestCase):
+    def test_date_only_is_date_precision(self):
+        self.assertEqual(infer_verified_precision("2026-07-29"), "date")
+
+    def test_full_timestamp_is_instant_precision(self):
+        self.assertEqual(
+            infer_verified_precision("2026-07-29T14:30:00+00:00"), "instant"
+        )
+
+    def test_sentinel_is_unknown_precision(self):
+        self.assertEqual(infer_verified_precision("unknown"), "unknown")
+
+    def test_payload_type_inferred_from_claim_support_status(self):
+        self.assertEqual(infer_payload_type("supported_by_quote"), "quote")
+        self.assertEqual(infer_payload_type("supported_by_paraphrase"), "paraphrase")
+        self.assertEqual(infer_payload_type("checked_not_supported"), "negative_finding")
+        self.assertEqual(infer_payload_type("contradicted"), "contradiction")
+        self.assertEqual(infer_payload_type("not_checked"), "none")
+        self.assertEqual(infer_payload_type("metadata_only"), "none")
 
 
 class ValidateRowTests(unittest.TestCase):
@@ -45,8 +149,6 @@ class ValidateRowTests(unittest.TestCase):
         self.assertTrue(any("text_quality_status" in p for p in problems))
 
     def test_output_gate_not_licensed_by_claim_support(self):
-        # not_checked cannot license allowed_as_quote -- that's exactly the
-        # false-promotion bug the C04 lesson is about.
         problems = validate_row(
             make_row(claim_support_status="not_checked", output_gate="allowed_as_quote")
         )
@@ -54,7 +156,7 @@ class ValidateRowTests(unittest.TestCase):
 
     def test_quote_gate_requires_payload(self):
         problems = validate_row(
-            make_row(output_gate="allowed_as_quote", evidence_payload_hebrew_verbatim="")
+            make_row(output_gate="allowed_as_quote", hebrew_verbatim="")
         )
         self.assertTrue(any("requires a non-empty" in p for p in problems))
 
@@ -63,15 +165,12 @@ class ValidateRowTests(unittest.TestCase):
             make_row(
                 claim_support_status="checked_not_supported",
                 output_gate="allowed_as_negative_finding",
-                evidence_payload_hebrew_verbatim="לא נמצא תימוך בטענה",
+                payload_type="negative_finding",
+                hebrew_verbatim="לא נמצא תימוך בטענה",
             )
         )
         self.assertEqual(problems, [])
 
-    # --- regression: review finding #3 ---
-    # A row could previously reach allowed_as_quote with a real payload but
-    # placeholder provenance (verified_utc="unknown", source_ref="unknown",
-    # verification_method=""), and validate_row reported zero problems.
     def test_quote_gate_requires_real_provenance_not_just_payload(self):
         problems = validate_row(
             make_row(
@@ -86,15 +185,16 @@ class ValidateRowTests(unittest.TestCase):
         self.assertTrue(any("verified_by_actor" in p for p in problems))
         self.assertTrue(any("verified_utc" in p for p in problems))
 
-    # --- regression: review finding #4 ---
-    # A row with text_quality_status="needs_ocr" could still carry
-    # output_gate="allowed_as_quote" -- asserting a quote out of a document
-    # whose text isn't even confirmed readable yet.
     def test_quote_gate_requires_text_qa_passed(self):
         problems = validate_row(make_row(text_quality_status="needs_ocr"))
         self.assertTrue(
             any("text_quality_status" in p and "allowed_as_quote" in p for p in problems)
         )
+
+    # --- date-only is accepted, not rejected, for allowed_as_quote ---
+    def test_date_only_verified_utc_alone_is_not_a_problem(self):
+        problems = validate_row(make_row(verified_utc="2026-07-29"))
+        self.assertEqual(problems, [])
 
 
 class ParseVerifiedUtcTests(unittest.TestCase):
@@ -105,10 +205,6 @@ class ParseVerifiedUtcTests(unittest.TestCase):
         for sentinel in ("", "unknown", "n/a", "—", "after-v4-snapshot"):
             self.assertIsNone(parse_verified_utc(sentinel))
 
-    # --- regression: review finding #2 ---
-    # A date-only value like the real v6 register uses ("2026-07-29") parsed
-    # as naive; a full ISO timestamp parsed as tz-aware. Comparing the two
-    # raised TypeError. Both should now come back as aware and comparable.
     def test_date_only_and_full_timestamp_are_both_aware_and_comparable(self):
         date_only = parse_verified_utc("2026-07-29")
         full = parse_verified_utc("2026-07-30T00:00:00+00:00")
@@ -127,9 +223,9 @@ class EvidenceStoreRoundtripTests(unittest.TestCase):
             self.assertEqual(len(loaded), 1)
             self.assertEqual(loaded[0].document, row.document)
             self.assertEqual(
-                loaded[0].evidence_payload_hebrew_verbatim,
-                row.evidence_payload_hebrew_verbatim,
+                loaded[0].payload.hebrew_verbatim, row.payload.hebrew_verbatim
             )
+            self.assertEqual(loaded[0].payload.payload_hash, row.payload.payload_hash)
 
     def test_read_all_on_missing_file_returns_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -167,8 +263,6 @@ class ResolveCurrentStateTests(unittest.TestCase):
         self.assertFalse(resolved[("doc-1", "C99")].conflict)
 
     def test_no_timestamps_at_all_is_a_conflict(self):
-        # This is the C04 case: two candidate rows, neither with a real
-        # verified_utc -- must not silently trust "the last one".
         a = make_row(source_ref="doc-1", verified_utc="unknown")
         b = make_row(source_ref="doc-1", verified_utc="after-v4-snapshot")
         resolved = resolve_current_state([a, b])
@@ -194,11 +288,6 @@ class ResolveCurrentStateTests(unittest.TestCase):
         resolved = resolve_current_state([a, b])
         self.assertEqual(len(resolved), 1)
 
-    # --- regression: review finding #1 ---
-    # Two rows sharing a source_ref but naming different claims (e.g. one
-    # expert opinion supporting both C14 and C15) used to collapse into a
-    # single resolved entry -- the earlier claim vanished with no conflict
-    # flag at all.
     def test_different_claims_on_same_document_do_not_collapse(self):
         c14 = make_row(
             source_ref="drive-xyz",
@@ -216,6 +305,27 @@ class ResolveCurrentStateTests(unittest.TestCase):
         self.assertIn(("drive-xyz", "C15"), resolved)
         self.assertFalse(resolved[("drive-xyz", "C14")].conflict)
         self.assertFalse(resolved[("drive-xyz", "C15")].conflict)
+
+    # --- explicit policy check: same-day date-only, different conclusions ---
+    def test_same_day_date_only_rows_with_different_conclusions_conflict(self):
+        first_read = make_row(
+            source_ref="doc-1",
+            verified_utc="2026-07-29",  # date-only
+            claim_support_status="not_checked",
+            output_gate="blocked",
+        )
+        second_read_same_day = make_row(
+            source_ref="doc-1",
+            verified_utc="2026-07-29",  # date-only, same day
+            claim_support_status="supported_by_quote",
+            output_gate="allowed_as_quote",
+        )
+        resolved = resolve_current_state([first_read, second_read_same_day])
+        entry = resolved[("doc-1", "C99")]
+        self.assertTrue(entry.conflict)
+        self.assertEqual(
+            {r.payload.verified_precision for r in entry.candidates}, {"date"}
+        )
 
 
 @unittest.skipUnless(
@@ -236,18 +346,29 @@ class ImportRealRegisterCsvTests(unittest.TestCase):
         for row in rows:
             problems = validate_row(row)
             self.assertEqual(
-                problems, [], f"{row.document!r}/{row.claim_id!r} failed: {problems}"
+                problems,
+                [],
+                f"{row.document!r}/{row.payload.claim_id!r} failed: {problems}",
             )
 
     def test_multi_claim_row_splits_into_separate_rows(self):
-        # The Greenhouse expert opinion is filed under "C14; C15" in the
-        # real register -- must come back as two distinct EvidenceRow
-        # records with the same source_ref, not one row.
         rows = import_csv(REAL_REGISTER_CSV)
         greenhouse_claim_ids = {
-            r.claim_id for r in rows if "גרינהאוז" in r.document
+            r.payload.claim_id for r in rows if "גרינהאוז" in r.document
         }
         self.assertEqual(greenhouse_claim_ids, {"C14", "C15"})
+
+    def test_real_rows_use_date_precision_not_instant(self):
+        # Documents the current, real state of the register: this is why
+        # validate_row must not require 'instant' precision today.
+        rows = import_csv(REAL_REGISTER_CSV)
+        real_verifications = [
+            r for r in rows if r.payload.verified_precision != "unknown"
+        ]
+        self.assertTrue(real_verifications)
+        self.assertTrue(
+            all(r.payload.verified_precision == "date" for r in real_verifications)
+        )
 
 
 if __name__ == "__main__":
