@@ -1,11 +1,14 @@
 # Case Prep Engine
 
-Tooling to help prepare a תיק ועדה (medical committee case file) for נכי צה"ל
-disability recognition — currently scoped to one case: תקנה 9, claimed causal
-connection PTSD -> MS.
+Tooling to help נכי צה"ל prepare a תיק ועדה (medical committee case file) for
+disability recognition, appeal, or a תקנה 9 secondary-disability claim: read
+and structure medical/committee documents, track what's actually verified
+vs. still assumed, and build a readiness picture before a ועדה רפואית.
 
-This is a preparation and organization assistant. It is not legal advice,
-medical advice, or a replacement for a lawyer, physician, or official body.
+This is a preparation and organization assistant, for personal use by
+whoever runs it on their own documents. It is **not** legal advice, medical
+advice, or a replacement for a lawyer, physician, or official body — always
+verify anything it produces against your own case before relying on it.
 
 ## Layout
 
@@ -15,10 +18,12 @@ medical advice, or a replacement for a lawyer, physician, or official body.
 - `docs/` — generic methodology and reference material with no personal
   case content: the evidence status model, and de-identified process/
   document-checklist guides. Tracked in git.
-- `data/` — case-specific research: the evidence matrix, OCR gap
-  registers, and readiness report, all of which contain real Hebrew
-  quotes from real medical/committee documents. **Gitignored on purpose**
-  — see "Privacy" below.
+- `data/` — one person's case-specific research: their evidence matrix, OCR
+  gap registers, and readiness notes, which contain real Hebrew quotes from
+  real medical/committee documents. **Gitignored on purpose, always** — see
+  "Privacy" below. If this ever runs for more than one person, each
+  person's `data/` is theirs alone and is never read, uploaded, or shared
+  by this codebase on anyone else's behalf.
 
 ## Module boundary
 
@@ -38,16 +43,15 @@ python -m unittest discover -s tests
 
 ## Privacy
 
-Real Hebrew quotes from actual medical opinions and committee protocols
-(diagnoses, PTSD symptoms, dissociation/fugue states, disability
-percentages) live only in `data/`, which is excluded from git via
+Real Hebrew quotes from actual medical and committee documents (whoever's
+case this is run on) live only in `data/`, excluded from git via
 `.gitignore`. Code and tests use synthetic fixtures built from the same
-domain lexicon so the git history never carries personal medical content,
-even if this repository is ever pushed somewhere.
+domain lexicon so the git history never carries anyone's personal medical
+content, even though this repository is public.
 
-## Source documents
-
-The underlying medical/legal source documents live in Google Drive, folder
-`מסמכים רפואים - נכות צה"ל` (not mirrored locally; `data/*.csv` tracks which
-documents have been read, their text-quality/claim-support/output-gate
-status, and a `source_ref` Drive file id for each).
+This tool currently reads source documents out of the runner's own Google
+Drive via a locally-authorized connection. There is no shared backend yet.
+If this ever runs for people other than the original author, the
+deployment model and any use of outside services on real medical text need
+a deliberate design pass first, not an assumption carried over from how
+the single-user prototype works today.
