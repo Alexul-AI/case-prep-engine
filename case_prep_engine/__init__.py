@@ -20,6 +20,12 @@ from .hebrew_text_quality import (
     assess_hebrew_text_quality,
     maybe_fix_hebrew_reversal,
 )
+from .timeline import (
+    TimelineEvent,
+    build_timeline,
+    extract_date_from_document_title,
+    infer_event_type,
+)
 
 __all__ = [
     "assess_hebrew_payload_quality",
@@ -27,6 +33,10 @@ __all__ = [
     "maybe_fix_hebrew_reversal",
     "ClaimMatrixEntry",
     "build_evidence_matrix",
+    "TimelineEvent",
+    "build_timeline",
+    "extract_date_from_document_title",
+    "infer_event_type",
     "EvidencePayload",
     "EvidenceRow",
     "EvidenceStore",
