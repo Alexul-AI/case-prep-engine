@@ -21,8 +21,8 @@ REAL_REGISTER_CSV = (
 def make_row(**overrides) -> EvidenceRow:
     defaults = dict(
         document="Test Document",
-        source_ref="unknown",
-        related_claims="C99",
+        source_ref="drive-id-1",
+        claim_id="C99",
         text_quality_status="text_qa_passed",
         claim_support_status="supported_by_quote",
         output_gate="allowed_as_quote",
@@ -68,6 +68,34 @@ class ValidateRowTests(unittest.TestCase):
         )
         self.assertEqual(problems, [])
 
+    # --- regression: review finding #3 ---
+    # A row could previously reach allowed_as_quote with a real payload but
+    # placeholder provenance (verified_utc="unknown", source_ref="unknown",
+    # verification_method=""), and validate_row reported zero problems.
+    def test_quote_gate_requires_real_provenance_not_just_payload(self):
+        problems = validate_row(
+            make_row(
+                source_ref="unknown",
+                verification_method="",
+                verified_by_actor="",
+                verified_utc="unknown",
+            )
+        )
+        self.assertTrue(any("source_ref" in p for p in problems))
+        self.assertTrue(any("verification_method" in p for p in problems))
+        self.assertTrue(any("verified_by_actor" in p for p in problems))
+        self.assertTrue(any("verified_utc" in p for p in problems))
+
+    # --- regression: review finding #4 ---
+    # A row with text_quality_status="needs_ocr" could still carry
+    # output_gate="allowed_as_quote" -- asserting a quote out of a document
+    # whose text isn't even confirmed readable yet.
+    def test_quote_gate_requires_text_qa_passed(self):
+        problems = validate_row(make_row(text_quality_status="needs_ocr"))
+        self.assertTrue(
+            any("text_quality_status" in p and "allowed_as_quote" in p for p in problems)
+        )
+
 
 class ParseVerifiedUtcTests(unittest.TestCase):
     def test_parses_iso_timestamp(self):
@@ -76,6 +104,17 @@ class ParseVerifiedUtcTests(unittest.TestCase):
     def test_sentinels_return_none(self):
         for sentinel in ("", "unknown", "n/a", "—", "after-v4-snapshot"):
             self.assertIsNone(parse_verified_utc(sentinel))
+
+    # --- regression: review finding #2 ---
+    # A date-only value like the real v6 register uses ("2026-07-29") parsed
+    # as naive; a full ISO timestamp parsed as tz-aware. Comparing the two
+    # raised TypeError. Both should now come back as aware and comparable.
+    def test_date_only_and_full_timestamp_are_both_aware_and_comparable(self):
+        date_only = parse_verified_utc("2026-07-29")
+        full = parse_verified_utc("2026-07-30T00:00:00+00:00")
+        self.assertIsNotNone(date_only.tzinfo)
+        self.assertIsNotNone(full.tzinfo)
+        self.assertLess(date_only, full)  # must not raise TypeError
 
 
 class EvidenceStoreRoundtripTests(unittest.TestCase):
@@ -110,9 +149,10 @@ class ResolveCurrentStateTests(unittest.TestCase):
     def test_single_row_is_current_no_conflict(self):
         row = make_row(source_ref="doc-1")
         resolved = resolve_current_state([row])
-        self.assertEqual(resolved["doc-1"].row, row)
-        self.assertFalse(resolved["doc-1"].conflict)
-        self.assertTrue(resolved["doc-1"].has_verified_timestamp)
+        entry = resolved[("doc-1", "C99")]
+        self.assertEqual(entry.row, row)
+        self.assertFalse(entry.conflict)
+        self.assertTrue(entry.has_verified_timestamp)
 
     def test_newer_timestamp_wins_without_conflict(self):
         older = make_row(
@@ -123,8 +163,8 @@ class ResolveCurrentStateTests(unittest.TestCase):
         )
         newer = make_row(source_ref="doc-1", verified_utc="2026-06-01T00:00:00+00:00")
         resolved = resolve_current_state([older, newer])
-        self.assertEqual(resolved["doc-1"].row, newer)
-        self.assertFalse(resolved["doc-1"].conflict)
+        self.assertEqual(resolved[("doc-1", "C99")].row, newer)
+        self.assertFalse(resolved[("doc-1", "C99")].conflict)
 
     def test_no_timestamps_at_all_is_a_conflict(self):
         # This is the C04 case: two candidate rows, neither with a real
@@ -132,7 +172,7 @@ class ResolveCurrentStateTests(unittest.TestCase):
         a = make_row(source_ref="doc-1", verified_utc="unknown")
         b = make_row(source_ref="doc-1", verified_utc="after-v4-snapshot")
         resolved = resolve_current_state([a, b])
-        self.assertTrue(resolved["doc-1"].conflict)
+        self.assertTrue(resolved[("doc-1", "C99")].conflict)
 
     def test_tied_newest_timestamps_is_a_conflict(self):
         a = make_row(
@@ -146,13 +186,36 @@ class ResolveCurrentStateTests(unittest.TestCase):
             verified_utc="2026-06-01T00:00:00+00:00",
         )
         resolved = resolve_current_state([a, b])
-        self.assertTrue(resolved["doc-1"].conflict)
+        self.assertTrue(resolved[("doc-1", "C99")].conflict)
 
     def test_groups_by_source_ref_not_document_title(self):
         a = make_row(source_ref="drive-id-123", document="Old Title")
         b = make_row(source_ref="drive-id-123", document="Renamed Title")
         resolved = resolve_current_state([a, b])
         self.assertEqual(len(resolved), 1)
+
+    # --- regression: review finding #1 ---
+    # Two rows sharing a source_ref but naming different claims (e.g. one
+    # expert opinion supporting both C14 and C15) used to collapse into a
+    # single resolved entry -- the earlier claim vanished with no conflict
+    # flag at all.
+    def test_different_claims_on_same_document_do_not_collapse(self):
+        c14 = make_row(
+            source_ref="drive-xyz",
+            claim_id="C14",
+            verified_utc="2026-07-29T00:00:00+00:00",
+        )
+        c15 = make_row(
+            source_ref="drive-xyz",
+            claim_id="C15",
+            verified_utc="2026-07-30T00:00:00+00:00",
+        )
+        resolved = resolve_current_state([c14, c15])
+        self.assertEqual(len(resolved), 2)
+        self.assertIn(("drive-xyz", "C14"), resolved)
+        self.assertIn(("drive-xyz", "C15"), resolved)
+        self.assertFalse(resolved[("drive-xyz", "C14")].conflict)
+        self.assertFalse(resolved[("drive-xyz", "C15")].conflict)
 
 
 @unittest.skipUnless(
@@ -173,8 +236,18 @@ class ImportRealRegisterCsvTests(unittest.TestCase):
         for row in rows:
             problems = validate_row(row)
             self.assertEqual(
-                problems, [], f"{row.document!r} failed validation: {problems}"
+                problems, [], f"{row.document!r}/{row.claim_id!r} failed: {problems}"
             )
+
+    def test_multi_claim_row_splits_into_separate_rows(self):
+        # The Greenhouse expert opinion is filed under "C14; C15" in the
+        # real register -- must come back as two distinct EvidenceRow
+        # records with the same source_ref, not one row.
+        rows = import_csv(REAL_REGISTER_CSV)
+        greenhouse_claim_ids = {
+            r.claim_id for r in rows if "גרינהאוז" in r.document
+        }
+        self.assertEqual(greenhouse_claim_ids, {"C14", "C15"})
 
 
 if __name__ == "__main__":
