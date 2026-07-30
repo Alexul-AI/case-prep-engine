@@ -1,5 +1,6 @@
 """Case prep engine prototype modules."""
 
+from .evidence_matrix import ClaimMatrixEntry, build_evidence_matrix
 from .evidence_store import (
     EvidencePayload,
     EvidenceRow,
@@ -23,6 +24,8 @@ __all__ = [
     "assess_hebrew_payload_quality",
     "assess_hebrew_text_quality",
     "maybe_fix_hebrew_reversal",
+    "ClaimMatrixEntry",
+    "build_evidence_matrix",
     "EvidencePayload",
     "EvidenceRow",
     "EvidenceStore",
