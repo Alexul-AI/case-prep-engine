@@ -1,5 +1,13 @@
 """Case prep engine prototype modules."""
 
+from .claim_summary import (
+    CLAIM_SUMMARY_STATUSES,
+    ClaimSummary,
+    ClaimSummaryRequest,
+    build_claim_summary_prompt,
+    build_claim_summary_request,
+    validate_claim_summary,
+)
 from .evidence_matrix import ClaimMatrixEntry, build_evidence_matrix
 from .evidence_store import (
     EvidencePayload,
@@ -31,6 +39,12 @@ __all__ = [
     "assess_hebrew_payload_quality",
     "assess_hebrew_text_quality",
     "maybe_fix_hebrew_reversal",
+    "CLAIM_SUMMARY_STATUSES",
+    "ClaimSummary",
+    "ClaimSummaryRequest",
+    "build_claim_summary_prompt",
+    "build_claim_summary_request",
+    "validate_claim_summary",
     "ClaimMatrixEntry",
     "build_evidence_matrix",
     "TimelineEvent",
