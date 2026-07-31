@@ -10,7 +10,35 @@ whoever runs it on their own documents. It is **not** legal advice, medical
 advice, or a replacement for a lawyer, physician, or official body — always
 verify anything it produces against your own case before relying on it.
 
+## Quickstart
+
+No Google Drive, no API key, no personal data needed -- this runs entirely
+against a synthetic example register:
+
+```powershell
+python -m case_prep_engine summarize-claim --register examples/demo_register.csv --list-claims
+python -m case_prep_engine summarize-claim --claim-id DEMO_C01 --register examples/demo_register.csv --fake
+```
+
+`--fake` uses a deterministic stand-in for a real LLM (no real provider is
+wired up yet — see "Module boundary" below). `--list-claims` shows every
+claim id in a register without needing to know one in advance.
+`--show-prompt` prints the exact prompt text to stderr for debugging;
+`--output path.json` writes the result to a file (UTF-8) instead of stdout;
+`--strict` makes a `status="blocked"` result (an unresolved conflict, or a
+claim nothing has been checked for yet) exit non-zero, for CI/batch use —
+the default exit code is 0 for any successfully validated result, since a
+correctly-reported "blocked" is the pipeline working, not failing.
+
+Once you have your own register (see `data/` below), point `--register` at
+it instead — same commands, no `--fake` removal needed until a real
+provider exists.
+
 ## Layout
+
+- `examples/demo_register.csv` — synthetic, non-personal register with
+  three claims (supported / not_supported / blocked) for the quickstart
+  above. Tracked in git, safe to publish.
 
 - `case_prep_engine/` — the Python package. Tracked in git.
 - `tests/` — unit tests, using synthetic Hebrew fixtures (same domain

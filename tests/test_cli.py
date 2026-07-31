@@ -172,6 +172,50 @@ class CliSummarizeClaimTests(unittest.TestCase):
         self.assertNotEqual(data["status"], "supported")
         self.assertIn("unresolved conflict", stderr)
 
+    def test_strict_makes_conflict_non_zero(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--claim-id", "C-CONFLICT",
+             "--register", str(self.register), "--fake", "--strict"]
+        )
+        self.assertNotEqual(exit_code, 0)
+        data = json.loads(stdout)  # output is still produced, just a different exit code
+        self.assertEqual(data["status"], "blocked")
+
+    def test_strict_does_not_affect_a_clean_supported_result(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--claim-id", "C-SUP",
+             "--register", str(self.register), "--fake", "--strict"]
+        )
+        self.assertEqual(exit_code, 0)
+
+    def test_list_claims_shows_claim_id_document_and_status(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.register), "--list-claims"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("C-SUP", stdout)
+        self.assertIn("supported", stdout)
+        self.assertIn("Supported doc", stdout)
+        self.assertIn("C-NEG", stdout)
+        self.assertIn("not_supported", stdout)
+        self.assertIn("C-CONFLICT", stdout)
+        self.assertIn("conflict", stdout)
+
+    def test_list_claims_does_not_require_claim_id_or_fake(self):
+        # --list-claims must work without --claim-id/--fake at all -- it
+        # never touches the completion pipeline.
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.register), "--list-claims"]
+        )
+        self.assertEqual(exit_code, 0)
+
+    def test_missing_claim_id_without_list_claims_is_a_usage_error(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.register), "--fake"]
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("--claim-id", stderr)
+
     def test_show_prompt_does_not_leak_source_note(self):
         exit_code, stdout, stderr = run_cli(
             ["summarize-claim", "--claim-id", "C-LEAKCHECK",
@@ -194,6 +238,41 @@ class CliSummarizeClaimTests(unittest.TestCase):
         self.assertEqual(data["claim_id"], "C-SUP")
         # round-trips real Hebrew, not escaped/mangled
         self.assertIn("קיים תימוך", data["summary_he"])
+
+
+class DemoRegisterTests(unittest.TestCase):
+    """Exercises the actual examples/demo_register.csv shipped in the repo
+    -- the file the README quickstart command points at. No personal data,
+    safe for anyone who clones the repo (unlike data/, which is gitignored
+    and only exists locally for whoever built their own register).
+    """
+
+    DEMO_REGISTER = Path(__file__).resolve().parents[1] / "examples" / "demo_register.csv"
+
+    def test_demo_register_exists_and_is_tracked(self):
+        self.assertTrue(self.DEMO_REGISTER.exists())
+
+    def test_demo_register_has_the_three_advertised_scenarios(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.DEMO_REGISTER), "--list-claims"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("DEMO_C01", stdout)
+        self.assertIn("supported", stdout)
+        self.assertIn("DEMO_C02", stdout)
+        self.assertIn("not_supported", stdout)
+        self.assertIn("DEMO_C03", stdout)
+        self.assertIn("blocked", stdout)
+
+    def test_readme_quickstart_command_works(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--claim-id", "DEMO_C01",
+             "--register", str(self.DEMO_REGISTER), "--fake"]
+        )
+        self.assertEqual(exit_code, 0)
+        data = json.loads(stdout)
+        self.assertEqual(data["claim_id"], "DEMO_C01")
+        self.assertEqual(data["status"], "supported")
 
 
 class CliSubprocessSmokeTest(unittest.TestCase):

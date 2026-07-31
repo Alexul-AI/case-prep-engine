@@ -1,0 +1,4 @@
+document,source_ref,source_note,related_claims,text_quality_status,claim_support_status,output_gate,staleness_status,verified_by_actor,verification_method,verified_utc,evidence_payload_hebrew_verbatim,track,priority_in_track
+חוות דעת אורתופדית לדוגמה (01.03.2024),example-ref-001,,DEMO_C01,text_qa_passed,supported_by_quote,allowed_as_quote,fresh,demo_author,manual_read,2024-03-01,"ד""ר לדוגמה קבע כי קיימת זיקה סיבתית ישירה בין הפציעה בשירות לבין הכאב הכרוני בגב התחתון",Demo track A,1
+סיכום בדיקה נוירולוגית לדוגמה (15.05.2024),example-ref-002,,DEMO_C02,text_qa_passed,checked_not_supported,allowed_as_negative_finding,fresh,demo_author,manual_read,2024-05-15,הבדיקה הנוירולוגית לא העלתה ממצאים התומכים בטענה לפגיעה עצבית מתמשכת,Demo track B,1
+מסמך רפואי היסטורי לדוגמה (טרם נסרק),—,"awaiting OCR -- example row, not a real document",DEMO_C03,needs_ocr,metadata_only,blocked,stale_by_default_no_check_yet,—,—,—,,Demo track C,1
