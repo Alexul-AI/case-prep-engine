@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from .evidence_matrix import ClaimMatrixEntry
 from .evidence_store import EvidencePayload
@@ -77,6 +77,34 @@ def build_claim_summary_request(entry: ClaimMatrixEntry) -> ClaimSummaryRequest:
         contradictions=tuple(r.row.payload for r in entry.contradictions),
         has_unresolved_conflict=entry.has_unresolved_conflict,
         has_unresolved_evidence=bool(entry.unresolved),
+    )
+
+
+def request_to_dict(request: ClaimSummaryRequest) -> dict:
+    """Serialize a request to a plain, JSON-ready dict. Round-trips through
+    request_from_dict().
+
+    Exists so a request can be frozen to a file between
+    export-claim-prompt and validate-summary (the manual bridge to a real
+    model, used before any automated provider exists). Re-deriving the
+    request from the register at validate time instead would silently
+    validate a real model's response against a *different* state if the
+    register changed in between export and validate -- the same class of
+    staleness bug this project's own provenance model
+    (docs/case_prep_status_model_v3_provenance.md) exists to catch, just
+    at the request/response boundary instead of the evidence-row boundary.
+    """
+    return asdict(request)
+
+
+def request_from_dict(data: dict) -> ClaimSummaryRequest:
+    return ClaimSummaryRequest(
+        claim_id=data["claim_id"],
+        supporting=tuple(EvidencePayload(**p) for p in data["supporting"]),
+        negative_findings=tuple(EvidencePayload(**p) for p in data["negative_findings"]),
+        contradictions=tuple(EvidencePayload(**p) for p in data["contradictions"]),
+        has_unresolved_conflict=data["has_unresolved_conflict"],
+        has_unresolved_evidence=data["has_unresolved_evidence"],
     )
 
 

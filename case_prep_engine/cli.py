@@ -11,10 +11,12 @@ from .claim_summary import (
     ClaimSummaryRequest,
     build_claim_summary_prompt,
     build_claim_summary_request,
+    request_from_dict,
+    request_to_dict,
 )
 from .evidence_matrix import ClaimMatrixEntry, build_evidence_matrix
 from .evidence_store import import_csv
-from .llm_adapter import JsonOnlyClaimSummaryLLM, LLMResponseError
+from .llm_adapter import JsonOnlyClaimSummaryLLM, LLMResponseError, parse_claim_summary_json
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -22,6 +24,8 @@ EXIT_REGISTER_NOT_FOUND = 3
 EXIT_CLAIM_NOT_FOUND = 4
 EXIT_INVALID_RESPONSE = 5
 EXIT_STRICT_BLOCKED = 6  # --strict only: status="blocked" (conflict or nothing checked)
+EXIT_REQUEST_FILE_PROBLEM = 7  # validate-summary: --request missing or not a saved request
+EXIT_SUMMARY_FILE_NOT_FOUND = 8  # validate-summary: --summary missing
 
 
 def make_fake_completion(request: ClaimSummaryRequest) -> Callable[[str], str]:
@@ -149,6 +153,34 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "for any validated result, including 'blocked'.",
     )
 
+    export = subparsers.add_parser(
+        "export-claim-prompt",
+        help="write a claim's prompt (to paste into any LLM chat by hand) "
+        "and its frozen request (for validate-summary) -- no completion, "
+        "no --fake, nothing sent anywhere",
+    )
+    export.add_argument("--claim-id", required=True)
+    export.add_argument("--register", required=True, type=Path)
+    export.add_argument(
+        "--request-output",
+        required=True,
+        type=Path,
+        help="where to save the frozen request JSON -- validate-summary "
+        "needs this exact file later, not a fresh one re-derived from the "
+        "register (which may have changed by then)",
+    )
+    export.add_argument(
+        "--output", type=Path, default=None, help="where to write the prompt text (default: stdout)"
+    )
+
+    validate = subparsers.add_parser(
+        "validate-summary",
+        help="validate a model's raw JSON reply (pasted into a file by hand) "
+        "against a request saved earlier by export-claim-prompt",
+    )
+    validate.add_argument("--request", required=True, type=Path, help="request JSON from export-claim-prompt")
+    validate.add_argument("--summary", required=True, type=Path, help="the model's raw JSON reply")
+
     return parser
 
 
@@ -245,6 +277,80 @@ def _run_summarize_claim(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _run_export_claim_prompt(args: argparse.Namespace) -> int:
+    if not args.register.exists():
+        print(f"error: register file not found: {args.register}", file=sys.stderr)
+        return EXIT_REGISTER_NOT_FOUND
+
+    rows = import_csv(args.register)
+    matrix = build_evidence_matrix(rows)
+    entry = matrix.get(args.claim_id)
+    if entry is None:
+        known = ", ".join(sorted(matrix)) or "(none)"
+        print(
+            f"error: claim_id {args.claim_id!r} not found in register. "
+            f"Known claim ids: {known}",
+            file=sys.stderr,
+        )
+        return EXIT_CLAIM_NOT_FOUND
+
+    request = build_claim_summary_request(entry)
+    prompt = build_claim_summary_prompt(request)
+
+    args.request_output.write_text(
+        json.dumps(request_to_dict(request), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"wrote {args.request_output}", file=sys.stderr)
+
+    if args.output:
+        args.output.write_text(prompt, encoding="utf-8")
+        print(f"wrote {args.output}", file=sys.stderr)
+    else:
+        print(prompt)
+
+    print(
+        "\nPaste the prompt above into any LLM chat (Claude, ChatGPT, etc.), "
+        "save its JSON reply to a file, then run:\n"
+        f"  python -m case_prep_engine validate-summary "
+        f"--request {args.request_output} --summary <path-to-the-reply.json>",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
+def _run_validate_summary(args: argparse.Namespace) -> int:
+    if not args.request.exists():
+        print(f"error: request file not found: {args.request}", file=sys.stderr)
+        return EXIT_REQUEST_FILE_PROBLEM
+    if not args.summary.exists():
+        print(f"error: summary file not found: {args.summary}", file=sys.stderr)
+        return EXIT_SUMMARY_FILE_NOT_FOUND
+
+    try:
+        request_data = json.loads(args.request.read_text(encoding="utf-8"))
+        request = request_from_dict(request_data)
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        print(
+            f"error: {args.request} is not a valid request file "
+            f"(expected output of export-claim-prompt --request-output): {exc}",
+            file=sys.stderr,
+        )
+        return EXIT_REQUEST_FILE_PROBLEM
+
+    raw = args.summary.read_text(encoding="utf-8")
+    try:
+        summary = parse_claim_summary_json(raw, request)
+    except LLMResponseError as exc:
+        print(f"error: summary failed validation: {exc}", file=sys.stderr)
+        for problem in exc.problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return EXIT_INVALID_RESPONSE
+
+    print(f"OK: claim {summary.claim_id!r} -> status={summary.status!r}", file=sys.stderr)
+    print(json.dumps(dataclasses.asdict(summary), ensure_ascii=False, indent=2))
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     # This CLI's entire job is printing Hebrew JSON. A real console on
     # Windows commonly defaults stdout/stderr to a legacy codepage (e.g.
@@ -263,6 +369,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "summarize-claim":
         return _run_summarize_claim(args)
+    if args.command == "export-claim-prompt":
+        return _run_export_claim_prompt(args)
+    if args.command == "validate-summary":
+        return _run_validate_summary(args)
     parser.error(f"unknown command: {args.command}")
     return EXIT_USAGE  # pragma: no cover -- parser.error() already exits
 

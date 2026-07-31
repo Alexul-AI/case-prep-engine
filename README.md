@@ -34,6 +34,23 @@ Once you have your own register (see `data/` below), point `--register` at
 it instead — same commands, no `--fake` removal needed until a real
 provider exists.
 
+### Trying a real model by hand
+
+There's no automated LLM provider yet (see "Module boundary" below) — but
+you can already run a real model against the real prompt contract, by
+hand, with nothing sent anywhere by this codebase itself:
+
+```powershell
+python -m case_prep_engine export-claim-prompt --claim-id DEMO_C01 --register examples/demo_register.csv --request-output request.json --output prompt.txt
+# paste prompt.txt into Claude/ChatGPT/whatever, save its JSON reply as reply.json
+python -m case_prep_engine validate-summary --request request.json --summary reply.json
+```
+
+`export-claim-prompt` also saves the exact request as `request.json` —
+`validate-summary` checks the reply against that frozen snapshot, not a
+fresh one re-derived from the register (which may have changed between
+the two steps).
+
 ## Layout
 
 - `examples/demo_register.csv` — synthetic, non-personal register with

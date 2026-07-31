@@ -240,6 +240,138 @@ class CliSummarizeClaimTests(unittest.TestCase):
         self.assertIn("קיים תימוך", data["summary_he"])
 
 
+class ManualBridgeTests(unittest.TestCase):
+    """export-claim-prompt + validate-summary: the manual bridge to any
+    real LLM chat, no API integration and nothing sent anywhere by this
+    codebase. Used before wiring up an automated provider, so real model
+    output can inform whether the prompt/schema contract actually holds up
+    -- see the commit message for why this comes before a provider PR.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.register = Path(self._tmp.name) / "register.csv"
+        write_register(
+            self.register,
+            [_row("Supported doc", "C-SUP", source_ref="Drive fileId sup1")],
+        )
+        self.request_path = Path(self._tmp.name) / "request.json"
+        self.prompt_path = Path(self._tmp.name) / "prompt.txt"
+
+    def _export(self):
+        return run_cli(
+            ["export-claim-prompt", "--claim-id", "C-SUP", "--register", str(self.register),
+             "--request-output", str(self.request_path), "--output", str(self.prompt_path)]
+        )
+
+    def test_export_writes_prompt_and_request_files(self):
+        exit_code, stdout, stderr = self._export()
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(self.request_path.exists())
+        self.assertTrue(self.prompt_path.exists())
+        prompt_text = self.prompt_path.read_text(encoding="utf-8")
+        self.assertIn("C-SUP", prompt_text)
+        request_data = json.loads(self.request_path.read_text(encoding="utf-8"))
+        self.assertEqual(request_data["claim_id"], "C-SUP")
+        self.assertTrue(request_data["supporting"])
+
+    def test_export_unknown_claim_id_is_an_error(self):
+        exit_code, stdout, stderr = run_cli(
+            ["export-claim-prompt", "--claim-id", "C-NOPE", "--register", str(self.register),
+             "--request-output", str(self.request_path)]
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("not found", stderr)
+
+    def test_validate_summary_accepts_a_correct_hand_written_reply(self):
+        self._export()
+        real_hash = json.loads(self.request_path.read_text(encoding="utf-8"))["supporting"][0]["payload_hash"]
+        summary_path = Path(self._tmp.name) / "reply.json"
+        summary_path.write_text(
+            json.dumps({
+                "claim_id": "C-SUP", "status": "supported",
+                "summary_he": "יש תימוך", "citations": [real_hash],
+            }),
+            encoding="utf-8",
+        )
+        exit_code, stdout, stderr = run_cli(
+            ["validate-summary", "--request", str(self.request_path), "--summary", str(summary_path)]
+        )
+        self.assertEqual(exit_code, 0)
+        data = json.loads(stdout)
+        self.assertEqual(data["status"], "supported")
+
+    def test_validate_summary_rejects_a_fabricated_citation(self):
+        self._export()
+        summary_path = Path(self._tmp.name) / "bad_reply.json"
+        summary_path.write_text(
+            json.dumps({
+                "claim_id": "C-SUP", "status": "supported",
+                "summary_he": "x", "citations": ["not-a-real-hash"],
+            }),
+            encoding="utf-8",
+        )
+        exit_code, stdout, stderr = run_cli(
+            ["validate-summary", "--request", str(self.request_path), "--summary", str(summary_path)]
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("not a real payload_hash", stderr)
+
+    def test_validate_summary_request_file_not_found(self):
+        exit_code, stdout, stderr = run_cli(
+            ["validate-summary", "--request", str(Path(self._tmp.name) / "missing.json"),
+             "--summary", str(Path(self._tmp.name) / "also-missing.json")]
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("not found", stderr)
+
+    def test_validate_summary_summary_file_not_found(self):
+        self._export()
+        exit_code, stdout, stderr = run_cli(
+            ["validate-summary", "--request", str(self.request_path),
+             "--summary", str(Path(self._tmp.name) / "missing-reply.json")]
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("not found", stderr)
+
+    def test_validate_uses_frozen_request_not_a_live_re_derived_one(self):
+        # The whole point of saving --request-output: if the register
+        # changes between export and validate, validation must still use
+        # the exact snapshot the model actually saw, not a fresh
+        # re-derivation that could now disagree with it.
+        self._export()
+        real_hash = json.loads(self.request_path.read_text(encoding="utf-8"))["supporting"][0]["payload_hash"]
+
+        # Mutate the register after export -- add a contradiction for the
+        # same claim. A live re-derivation would now see has_contradiction,
+        # but the frozen request must not.
+        write_register(
+            self.register,
+            [
+                _row("Supported doc", "C-SUP", source_ref="Drive fileId sup1"),
+                _row(
+                    "New contradicting doc", "C-SUP", source_ref="Drive fileId newcontra",
+                    claim_support_status="contradicted", output_gate="allowed_as_contradiction",
+                ),
+            ],
+        )
+
+        summary_path = Path(self._tmp.name) / "reply.json"
+        summary_path.write_text(
+            json.dumps({
+                "claim_id": "C-SUP", "status": "supported",
+                "summary_he": "יש תימוך", "citations": [real_hash],
+            }),
+            encoding="utf-8",
+        )
+        exit_code, stdout, stderr = run_cli(
+            ["validate-summary", "--request", str(self.request_path), "--summary", str(summary_path)]
+        )
+        # Still valid against the frozen (pre-mutation) request.
+        self.assertEqual(exit_code, 0)
+
+
 class DemoRegisterTests(unittest.TestCase):
     """Exercises the actual examples/demo_register.csv shipped in the repo
     -- the file the README quickstart command points at. No personal data,
