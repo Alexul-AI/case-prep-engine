@@ -28,6 +28,13 @@ from .hebrew_text_quality import (
     assess_hebrew_text_quality,
     maybe_fix_hebrew_reversal,
 )
+from .llm_adapter import (
+    ClaimSummaryLLM,
+    JsonOnlyClaimSummaryLLM,
+    LLMResponseError,
+    MockClaimSummaryLLM,
+    parse_claim_summary_json,
+)
 from .timeline import (
     TimelineEvent,
     build_timeline,
@@ -51,6 +58,11 @@ __all__ = [
     "build_timeline",
     "extract_date_from_document_title",
     "infer_event_type",
+    "ClaimSummaryLLM",
+    "JsonOnlyClaimSummaryLLM",
+    "LLMResponseError",
+    "MockClaimSummaryLLM",
+    "parse_claim_summary_json",
     "EvidencePayload",
     "EvidenceRow",
     "EvidenceStore",

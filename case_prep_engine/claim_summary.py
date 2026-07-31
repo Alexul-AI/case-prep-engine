@@ -140,38 +140,47 @@ class ClaimSummary:
     open_risks: tuple[str, ...]
 
 
-def validate_claim_summary(summary: ClaimSummary, entry: ClaimMatrixEntry) -> list[str]:
-    """Return consistency problems between a claim summary and its source entry.
+def validate_claim_summary(summary: ClaimSummary, request: ClaimSummaryRequest) -> list[str]:
+    """Return consistency problems between a claim summary and its request.
 
-    This is the actual safety boundary of this module -- build_claim_summary_prompt()
-    only *asks* a model to behave; this is what refuses to accept the answer
-    if it didn't. Every rule here is mechanically checkable against
-    ClaimMatrixEntry, deliberately not requiring any judgment call this
-    module isn't equipped to make (see the docstring notes on the causal-
-    wording rule and the negative-findings rule for the specific
-    interpretations chosen where the original spec left more than one
-    reasonable reading).
+    Validates against ClaimSummaryRequest, not ClaimMatrixEntry -- the
+    request is exactly what the model (or a human) was actually given, and
+    validation must check the answer against the same thing the question
+    was built from, not a broader object (ClaimMatrixEntry also carries
+    `unresolved`, which never reaches the model at all). This also matches
+    ClaimSummaryLLM.summarize_claim(self, request)'s own signature: an
+    implementation needs to be able to call this using only what it has.
+
+    This is the actual safety boundary of this module --
+    build_claim_summary_prompt() only *asks* a model to behave; this is
+    what refuses to accept the answer if it didn't. Every rule here is
+    mechanically checkable against ClaimSummaryRequest, deliberately not
+    requiring any judgment call this module isn't equipped to make (see
+    the docstring notes on the causal-wording rule and the
+    negative-findings rule for the specific interpretations chosen where
+    the original spec left more than one reasonable reading).
     """
     problems: list[str] = []
 
-    if summary.claim_id != entry.claim_id:
+    if summary.claim_id != request.claim_id:
         problems.append(
             f"summary.claim_id {summary.claim_id!r} does not match "
-            f"entry.claim_id {entry.claim_id!r}"
+            f"request.claim_id {request.claim_id!r}"
         )
 
     if summary.status not in CLAIM_SUMMARY_STATUSES:
         problems.append(f"unknown status: {summary.status!r}")
 
-    if entry.has_unresolved_conflict and summary.status == "supported":
+    if request.has_unresolved_conflict and summary.status == "supported":
         problems.append(
-            "entry has an unresolved conflict; status cannot be 'supported' "
-            "(it may be 'supported_with_risks', 'blocked', etc.)"
+            "request has an unresolved conflict; status cannot be "
+            "'supported' (it may be 'supported_with_risks', 'blocked', etc.)"
         )
 
-    if entry.has_contradiction and summary.status != "contradicted" and not summary.open_risks:
+    has_contradiction = bool(request.contradictions)
+    if has_contradiction and summary.status != "contradicted" and not summary.open_risks:
         problems.append(
-            "entry has a contradiction; it must be reflected in "
+            "request has a contradiction; it must be reflected in "
             "status='contradicted' or listed in open_risks, never dropped"
         )
 
@@ -181,31 +190,42 @@ def validate_claim_summary(summary: ClaimSummary, entry: ClaimMatrixEntry) -> li
     # negative finding is easy to omit silently (nothing else forces the
     # summary to even acknowledge it exists) unlike a contradiction, which
     # at least has a dedicated status value pulling attention to it.
-    if entry.has_negative_finding:
-        negative_hashes = {r.row.payload.payload_hash for r in entry.negative_findings}
+    has_negative_finding = bool(request.negative_findings)
+    if has_negative_finding:
+        negative_hashes = {p.payload_hash for p in request.negative_findings}
         if not negative_hashes & set(summary.citations):
             problems.append(
-                "entry has a negative finding (checked_not_supported); at "
+                "request has a negative finding (checked_not_supported); at "
                 "least one of its payload_hash values must appear in "
                 "citations, not be silently dropped"
             )
 
+    # New rule: whenever there's something risky about this claim (a
+    # contradiction, an unresolved conflict, or a negative finding),
+    # must_not_say cannot be empty -- the model has to say what it should
+    # not claim, not just produce a clean-looking summary that omits the
+    # risk by silence.
+    if (
+        (has_contradiction or request.has_unresolved_conflict or has_negative_finding)
+        and not summary.must_not_say
+    ):
+        problems.append(
+            "request has a contradiction, unresolved conflict, or negative "
+            "finding; must_not_say cannot be empty"
+        )
+
     # Citations may only point at evidence that was actually checked --
     # supporting/negative_findings/contradictions. Deliberately excludes
-    # `unresolved` (blocked/needs_ocr rows have no real payload text to
-    # cite) and `conflicts` (an unresolved conflict is exactly the kind of
-    # row that must never be cited as if it were settled).
-    citable_payloads = [
-        *(r.row.payload for r in entry.supporting),
-        *(r.row.payload for r in entry.negative_findings),
-        *(r.row.payload for r in entry.contradictions),
-    ]
+    # unchecked evidence (has_unresolved_evidence has no payload text to
+    # cite) and unresolved conflicts (citing one as if it were settled is
+    # exactly the failure mode this module exists to prevent).
+    citable_payloads = [*request.supporting, *request.negative_findings, *request.contradictions]
     valid_hashes = {p.payload_hash for p in citable_payloads}
     for citation in summary.citations:
         if citation not in valid_hashes:
             problems.append(
                 f"citation {citation!r} is not a real payload_hash from this "
-                "entry's checked evidence (supporting/negative_findings/contradictions)"
+                "request's checked evidence (supporting/negative_findings/contradictions)"
             )
 
     for quoted in _extract_quoted_spans(summary.summary_he):
