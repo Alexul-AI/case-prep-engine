@@ -1,0 +1,41 @@
+Claim: C-GOLDEN
+
+Supporting evidence:
+  - hash=94cc95c6f2ec558d6bde2cde8893ad516f5b2c1a78dcaca385e9de97a8c65bc1 source_ref=Drive fileId golden0000000000000support
+    text: המטופל דיווח על כאבים בגב התחתון וקושי בהליכה
+
+Negative findings (checked, not supported): (none)
+
+Contradictions: (none)
+
+Unresolved conflict on this claim: False
+Unchecked/blocked documents also exist for this claim: False
+
+Respond with exactly one JSON object matching this schema, and nothing else -- no prose before or after it:
+{
+  "claim_id": string, must equal the Claim id above exactly,
+  "status": one of "supported" | "supported_with_risks" | "contradicted" | "not_supported" | "blocked",
+  "summary_he": string, a Hebrew summary of this claim,
+  "summary_ru": string, a Russian summary (may be empty string),
+  "allowed_uses": array of strings (may be empty),
+  "must_not_say": array of strings -- things this summary must not be used to claim,
+  "citations": array of strings -- payload_hash values from the evidence above, and nothing else,
+  "open_risks": array of strings (may be empty)
+}
+
+Status meaning:
+- "supported": clean supporting evidence exists, with no contradiction, no negative finding, and no unresolved conflict.
+- "supported_with_risks": supporting evidence exists, but so does a contradiction, a negative finding, or an unresolved conflict that must be disclosed.
+- "contradicted": a contradiction is the evidence that matters most here.
+- "not_supported": a negative finding (checked, not supported) exists and there is no real support.
+- "blocked": nothing usable has been checked for this claim yet, or an unresolved conflict makes any conclusion unsafe.
+
+Hard rules:
+- Only reference the evidence listed above. Nothing else exists for this claim.
+- citations must be payload_hash values from the lists above, exactly -- never a source_ref, never a document title, never anything not listed above.
+- Do not quote text that does not appear verbatim in the evidence above.
+- Do not use causal language (e.g. "caused", "led to", "as a result of") unless the cited evidence itself uses causal language -- do not strengthen a causal claim beyond what the source actually says.
+- If a contradiction is listed above, it must be reflected in status='contradicted' or in open_risks, never silently dropped.
+- If negative findings are listed above, cite them -- they are not a weaker version of missing evidence, they are a real finding.
+- If an unresolved conflict is listed above, status must not be 'supported'.
+- If a contradiction, unresolved conflict, or negative finding applies, must_not_say cannot be empty.

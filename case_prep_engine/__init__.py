@@ -6,6 +6,8 @@ from .claim_summary import (
     ClaimSummaryRequest,
     build_claim_summary_prompt,
     build_claim_summary_request,
+    extract_allowed_payload_hashes,
+    render_payload_block,
     validate_claim_summary,
 )
 from .evidence_matrix import ClaimMatrixEntry, build_evidence_matrix
@@ -51,6 +53,8 @@ __all__ = [
     "ClaimSummaryRequest",
     "build_claim_summary_prompt",
     "build_claim_summary_request",
+    "extract_allowed_payload_hashes",
+    "render_payload_block",
     "validate_claim_summary",
     "ClaimMatrixEntry",
     "build_evidence_matrix",

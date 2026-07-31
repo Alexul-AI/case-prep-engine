@@ -80,25 +80,81 @@ def build_claim_summary_request(entry: ClaimMatrixEntry) -> ClaimSummaryRequest:
     )
 
 
+def _citable_payloads(request: ClaimSummaryRequest) -> tuple[EvidencePayload, ...]:
+    """Every payload a response is allowed to cite -- the single definition
+    of "citable" shared by extract_allowed_payload_hashes(), the prompt
+    builder, and validate_claim_summary(), so they can never quietly drift
+    apart. Deliberately excludes unchecked evidence (has_unresolved_evidence
+    is a bool, not a payload list -- there is nothing behind it to cite)
+    and unresolved conflicts (citing one as if it were settled is exactly
+    the failure mode this module exists to prevent).
+    """
+    return (*request.supporting, *request.negative_findings, *request.contradictions)
+
+
+def extract_allowed_payload_hashes(request: ClaimSummaryRequest) -> frozenset[str]:
+    """The exact set of payload_hash values a response may legally cite."""
+    return frozenset(p.payload_hash for p in _citable_payloads(request))
+
+
+def render_payload_block(payload: EvidencePayload) -> str:
+    """Render one payload as the fixed two-line block used in the prompt.
+
+    Deliberately minimal: hash, source_ref, and hebrew_verbatim only --
+    never translation_ru, source_location, or source_note (those exist on
+    EvidencePayload for local bookkeeping, not for a model to see), and
+    never a document title or any other field from the wider case file.
+    This is the actual privacy boundary: a model summarizing one claim
+    sees exactly what's rendered here and nothing else.
+
+    Does not wrap hebrew_verbatim in ASCII quote marks: real payload text
+    routinely contains its own embedded Hebrew gershayim mid-word (ד"ר,
+    כ"הס -- see the real Gour payload), which would visually look like the
+    wrapping quote closed early. The "text:" label plus indentation is
+    enough to mark the boundary without introducing that ambiguity.
+    """
+    return f"  - hash={payload.payload_hash} source_ref={payload.source_ref}\n    text: {payload.hebrew_verbatim}"
+
+
 def _format_payload_block(label: str, payloads: tuple[EvidencePayload, ...]) -> str:
     if not payloads:
         return f"{label}: (none)"
     lines = [f"{label}:"]
-    for p in payloads:
-        lines.append(f'  - hash={p.payload_hash} source_ref={p.source_ref}')
-        lines.append(f'    text: "{p.hebrew_verbatim}"')
+    lines.extend(render_payload_block(p) for p in payloads)
     return "\n".join(lines)
+
+
+_JSON_SCHEMA_BLOCK = """\
+Respond with exactly one JSON object matching this schema, and nothing else -- no prose before or after it:
+{
+  "claim_id": string, must equal the Claim id above exactly,
+  "status": one of "supported" | "supported_with_risks" | "contradicted" | "not_supported" | "blocked",
+  "summary_he": string, a Hebrew summary of this claim,
+  "summary_ru": string, a Russian summary (may be empty string),
+  "allowed_uses": array of strings (may be empty),
+  "must_not_say": array of strings -- things this summary must not be used to claim,
+  "citations": array of strings -- payload_hash values from the evidence above, and nothing else,
+  "open_risks": array of strings (may be empty)
+}
+
+Status meaning:
+- "supported": clean supporting evidence exists, with no contradiction, no negative finding, and no unresolved conflict.
+- "supported_with_risks": supporting evidence exists, but so does a contradiction, a negative finding, or an unresolved conflict that must be disclosed.
+- "contradicted": a contradiction is the evidence that matters most here.
+- "not_supported": a negative finding (checked, not supported) exists and there is no real support.
+- "blocked": nothing usable has been checked for this claim yet, or an unresolved conflict makes any conclusion unsafe."""
 
 
 def build_claim_summary_prompt(request: ClaimSummaryRequest) -> str:
     """Deterministic prompt text for claim_id, built only from request.
 
-    No LLM call happens here or anywhere in this module yet -- this
-    function's own output is what gets tested. The instructions below are
-    the model-facing mirror of validate_claim_summary()'s rules: stating
-    the constraint in the prompt doesn't make the model obey it, which is
-    exactly why validate_claim_summary() exists as a separate, mandatory
-    check on the output, not a replacement for one.
+    No LLM call happens here or anywhere in this module -- this function's
+    own output is what gets tested (see the golden-prompt tests). The
+    instructions below are the model-facing mirror of
+    validate_claim_summary()'s rules: stating the constraint in the prompt
+    doesn't make the model obey it, which is exactly why
+    validate_claim_summary() exists as a separate, mandatory check on the
+    output, not a replacement for one.
     """
     parts = [
         f"Claim: {request.claim_id}",
@@ -112,18 +168,23 @@ def build_claim_summary_prompt(request: ClaimSummaryRequest) -> str:
         f"Unresolved conflict on this claim: {request.has_unresolved_conflict}",
         f"Unchecked/blocked documents also exist for this claim: {request.has_unresolved_evidence}",
         "",
-        "Rules:",
+        _JSON_SCHEMA_BLOCK,
+        "",
+        "Hard rules:",
         "- Only reference the evidence listed above. Nothing else exists for this claim.",
-        "- Every citation must be one of the hash values listed above, exactly.",
+        "- citations must be payload_hash values from the lists above, exactly -- "
+        "never a source_ref, never a document title, never anything not listed above.",
         "- Do not quote text that does not appear verbatim in the evidence above.",
         "- Do not use causal language (e.g. \"caused\", \"led to\", \"as a result of\") "
         "unless the cited evidence itself uses causal language -- do not "
         "strengthen a causal claim beyond what the source actually says.",
-        "- If a contradiction is listed above, it must be reflected in the "
-        "status or in open_risks, never silently dropped.",
+        "- If a contradiction is listed above, it must be reflected in "
+        "status='contradicted' or in open_risks, never silently dropped.",
         "- If negative findings are listed above, cite them -- they are not "
         "a weaker version of missing evidence, they are a real finding.",
-        "- If an unresolved conflict is listed above, the status must not be 'supported'.",
+        "- If an unresolved conflict is listed above, status must not be 'supported'.",
+        "- If a contradiction, unresolved conflict, or negative finding "
+        "applies, must_not_say cannot be empty.",
     ]
     return "\n".join(parts)
 
@@ -214,13 +275,10 @@ def validate_claim_summary(summary: ClaimSummary, request: ClaimSummaryRequest) 
             "finding; must_not_say cannot be empty"
         )
 
-    # Citations may only point at evidence that was actually checked --
-    # supporting/negative_findings/contradictions. Deliberately excludes
-    # unchecked evidence (has_unresolved_evidence has no payload text to
-    # cite) and unresolved conflicts (citing one as if it were settled is
-    # exactly the failure mode this module exists to prevent).
-    citable_payloads = [*request.supporting, *request.negative_findings, *request.contradictions]
-    valid_hashes = {p.payload_hash for p in citable_payloads}
+    # Citations may only point at evidence that was actually checked. See
+    # _citable_payloads()'s docstring for what's deliberately excluded.
+    citable_payloads = _citable_payloads(request)
+    valid_hashes = extract_allowed_payload_hashes(request)
     for citation in summary.citations:
         if citation not in valid_hashes:
             problems.append(
