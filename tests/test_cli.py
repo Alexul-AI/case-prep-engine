@@ -289,6 +289,96 @@ class CliSummarizeClaimTests(unittest.TestCase):
         self.assertIn("קיים תימוך", data["summary_he"])
 
 
+class ListClaimsTrackFilterTests(unittest.TestCase):
+    """--list-claims --track-id/--case-id filtering (added after the real
+    Track A/Track B evidence-linking work): without a filter, --list-claims
+    must keep showing every case/track (unchanged default behavior); with
+    one, it must show only the matching claims and hide the rest -- not
+    just have the right data sitting in the register, but actually apply
+    the filter.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.register = Path(self._tmp.name) / "multi_track_register.csv"
+        with open(self.register, "w", encoding="utf-8", newline="") as handle:
+            fieldnames = ["case_id", "track_id", *_CSV_COLUMNS]
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for claim_id, track_id in (("C08", "track_a"), ("C09", "track_a"), ("B01", "track_b"), ("B03", "track_b")):
+                row = _row(f"Doc for {claim_id}", claim_id, source_ref=f"drive-{claim_id}")
+                row["case_id"] = "personal"
+                row["track_id"] = track_id
+                writer.writerow(row)
+
+    def test_no_filter_shows_every_track(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.register), "--list-claims"]
+        )
+        self.assertEqual(exit_code, 0)
+        for claim_id in ("C08", "C09", "B01", "B03"):
+            self.assertIn(claim_id, stdout)
+
+    def test_track_id_filter_shows_only_matching_claims(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.register),
+             "--list-claims", "--track-id", "track_b"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("B01", stdout)
+        self.assertIn("B03", stdout)
+        self.assertNotIn("C08", stdout)
+        self.assertNotIn("C09", stdout)
+
+    def test_track_id_filter_other_track_shows_the_complementary_set(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.register),
+             "--list-claims", "--track-id", "track_a"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("C08", stdout)
+        self.assertIn("C09", stdout)
+        self.assertNotIn("B01", stdout)
+        self.assertNotIn("B03", stdout)
+
+    def test_case_id_filter_also_applies(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.register),
+             "--list-claims", "--case-id", "personal"]
+        )
+        self.assertEqual(exit_code, 0)
+        for claim_id in ("C08", "C09", "B01", "B03"):
+            self.assertIn(claim_id, stdout)
+
+    def test_filter_matching_nothing_is_a_clear_empty_result_not_an_error(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.register),
+             "--list-claims", "--track-id", "no_such_track"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("no claims match", stderr)
+
+    def test_single_claim_lookup_still_defaults_when_case_track_omitted(self):
+        # The --list-claims filter change must not disturb the single-claim
+        # lookup path's own default-scope behavior (DEFAULT_CASE_ID/
+        # DEFAULT_TRACK_ID) when --case-id/--track-id are omitted there too.
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--claim-id", "C08", "--register", str(self.register), "--fake"]
+        )
+        self.assertNotEqual(exit_code, 0)  # C08 is under track_a/personal, not the DEFAULT_TRACK_ID
+        self.assertIn("no claim", stderr)
+
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--claim-id", "C08", "--case-id", "personal",
+             "--track-id", "track_a", "--register", str(self.register), "--fake"]
+        )
+        self.assertEqual(exit_code, 0)
+        data = json.loads(stdout)
+        self.assertEqual(data["claim_id"], "C08")
+
+
 class ManualBridgeTests(unittest.TestCase):
     """export-claim-prompt + validate-summary: the manual bridge to any
     real LLM chat, no API integration and nothing sent anywhere by this

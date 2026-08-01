@@ -532,19 +532,30 @@ class ImportRealRegisterCsvTests(unittest.TestCase):
             )
 
     def test_real_register_defaults_to_personal_case_and_takana9_track(self):
-        # The real register predates case_id/track_id -- confirms the CSV
-        # fallback (not an empty string, which validate_row would reject).
+        # Most of the real register still predates case_id/track_id --
+        # confirms the CSV fallback (not an empty string, which
+        # validate_row would reject) for those rows. As of the Track B
+        # evidence-linking PR (B01/B03), a couple of rows now carry an
+        # explicit, non-default track_id on purpose -- this test checks the
+        # fallback still works for everything else, not that the whole
+        # register is still on one track.
         rows = import_csv(REAL_REGISTER_CSV)
         self.assertTrue(rows)
         self.assertTrue(all(r.case_id == "personal" for r in rows))
-        self.assertTrue(all(r.track_id == "takana9_ptsd_ms" for r in rows))
+        track_ids = {r.track_id for r in rows}
+        self.assertIn("takana9_ptsd_ms", track_ids)
+        self.assertTrue(track_ids <= {"takana9_ptsd_ms", "ptsd_worsening"})
 
     def test_multi_claim_row_splits_into_separate_rows(self):
         rows = import_csv(REAL_REGISTER_CSV)
         greenhouse_claim_ids = {
             r.claim_id for r in rows if "גרינהאוז" in r.document
         }
-        self.assertEqual(greenhouse_claim_ids, {"C14", "C15"})
+        # C14/C15 (Track A, the original causal-claim links) plus B01
+        # (Track B, added once the same dissociation/fugue quote was
+        # recognized as also relevant to ptsd_worsening) -- three links to
+        # the same underlying document/quote, not a fourth distinct claim.
+        self.assertEqual(greenhouse_claim_ids, {"C14", "C15", "B01"})
 
     def test_real_rows_use_date_precision_not_instant(self):
         # Documents the current, real state of the register: this is why

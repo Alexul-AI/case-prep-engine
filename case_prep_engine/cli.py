@@ -130,13 +130,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--claim-id", help="required unless --list-claims is passed"
     )
     summarize.add_argument(
-        "--case-id", default=DEFAULT_CASE_ID,
-        help=f"default: {DEFAULT_CASE_ID!r} (matches registers with no case_id column)",
+        "--case-id", default=None,
+        help=f"for a single-claim lookup: default {DEFAULT_CASE_ID!r} (matches "
+        "registers with no case_id column) if omitted. For --list-claims: filters "
+        "to this case_id if given; omitted means show every case.",
     )
     summarize.add_argument(
-        "--track-id", default=DEFAULT_TRACK_ID,
-        help=f"default: {DEFAULT_TRACK_ID!r} (matches registers with no track_id column). "
-        "Ignored by --list-claims, which always shows every track.",
+        "--track-id", default=None,
+        help=f"for a single-claim lookup: default {DEFAULT_TRACK_ID!r} (matches "
+        "registers with no track_id column) if omitted. For --list-claims: filters "
+        "to this track_id if given; omitted means show every track.",
     )
     summarize.add_argument("--register", required=True, type=Path)
     summarize.add_argument(
@@ -229,17 +232,39 @@ _LIST_CLAIMS_BUCKETS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _run_list_claims(matrix: dict[ClaimKey, ClaimMatrixEntry]) -> int:
-    if not matrix:
-        print("(register has no claims)", file=sys.stderr)
+def _run_list_claims(
+    matrix: dict[ClaimKey, ClaimMatrixEntry],
+    case_id: str | None = None,
+    track_id: str | None = None,
+) -> int:
+    """List claims, optionally filtered to one case_id and/or track_id.
+
+    Both filters are opt-in (None means "don't filter on this axis") --
+    the common, no-argument invocation must keep showing every case/track
+    so a user can discover claim ids without already knowing the scope.
+    """
+    keys = [
+        key for key in matrix
+        if (case_id is None or key[0] == case_id)
+        and (track_id is None or key[1] == track_id)
+    ]
+    if not keys:
+        if case_id is None and track_id is None:
+            print("(register has no claims)", file=sys.stderr)
+        else:
+            print(
+                f"(no claims match case_id={case_id!r}, track_id={track_id!r})",
+                file=sys.stderr,
+            )
         return EXIT_OK
     print(f"{'case_id':<12} {'track_id':<20} {'claim_id':<12} {'status':<14} document")
-    for case_id, track_id, claim_id in sorted(matrix):
-        entry = matrix[(case_id, track_id, claim_id)]
+    for key in sorted(keys):
+        c_id, t_id, claim_id = key
+        entry = matrix[key]
         for attr, label in _LIST_CLAIMS_BUCKETS:
             for resolved in getattr(entry, attr):
                 print(
-                    f"{case_id:<12} {track_id:<20} {claim_id:<12} {label:<14} "
+                    f"{c_id:<12} {t_id:<20} {claim_id:<12} {label:<14} "
                     f"{resolved.row.document}"
                 )
     return EXIT_OK
@@ -255,7 +280,7 @@ def _run_summarize_claim(args: argparse.Namespace) -> int:
     matrix = build_evidence_matrix(rows)
 
     if args.list_claims:
-        return _run_list_claims(matrix)
+        return _run_list_claims(matrix, case_id=args.case_id, track_id=args.track_id)
 
     if not args.claim_id:
         print("error: --claim-id is required unless --list-claims is passed", file=sys.stderr)
@@ -264,13 +289,15 @@ def _run_summarize_claim(args: argparse.Namespace) -> int:
         print("error: --fake is required -- no real LLM provider is wired up yet", file=sys.stderr)
         return EXIT_USAGE
 
-    claim_key = (args.case_id, args.track_id, args.claim_id)
+    case_id = args.case_id if args.case_id is not None else DEFAULT_CASE_ID
+    track_id = args.track_id if args.track_id is not None else DEFAULT_TRACK_ID
+    claim_key = (case_id, track_id, args.claim_id)
     entry = matrix.get(claim_key)
     if entry is None:
         known = ", ".join(f"{c}/{t}/{cl}" for c, t, cl in sorted(matrix)) or "(none)"
         print(
-            f"error: no claim {args.claim_id!r} in case {args.case_id!r}, "
-            f"track {args.track_id!r}. Known case/track/claim combinations: {known}",
+            f"error: no claim {args.claim_id!r} in case {case_id!r}, "
+            f"track {track_id!r}. Known case/track/claim combinations: {known}",
             file=sys.stderr,
         )
         return EXIT_CLAIM_NOT_FOUND

@@ -101,7 +101,10 @@ whether "current" reflects reality or just the last write.
    and what's been verified about them (currently hand-maintained; no UI
    for this yet).
 2. **`summarize-claim --list-claims`** — see every claim across every
-   case/track without needing to already know an id.
+   case/track without needing to already know an id, or narrow it to one
+   case/track with `--case-id`/`--track-id` once a register has more than
+   one (e.g. checking only `ptsd_worsening`'s claims without `takana9_ptsd_ms`'s
+   mixed in).
 3. **`summarize-claim --claim-id ... --fake`** — get a structured,
    validated summary of one claim's evidence picture. `--fake` today
    (see "Manual LLM bridge"); a real model later, same command shape.
@@ -112,8 +115,10 @@ whether "current" reflects reality or just the last write.
 ## CLI MVP
 
 `python -m case_prep_engine summarize-claim` is the whole surface today:
-`--claim-id`, `--case-id`/`--track-id` (default to a single-case,
-single-track register so existing usage keeps working), `--fake`
+`--claim-id`, `--case-id`/`--track-id` (for a single-claim lookup, default
+to a single-case, single-track register so existing usage keeps working;
+for `--list-claims`, an opt-in filter — omitted shows every case/track,
+given narrows the listing to just that one), `--fake`
 (required until a real provider exists), `--list-claims`, `--strict`
 (opt-in non-zero exit for an unresolved/blocked result, for CI/batch use
 — default stays exit-0-for-any-validated-result, since a correctly
