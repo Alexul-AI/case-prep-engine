@@ -1,3 +1,4 @@
+import csv
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from case_prep_engine.evidence_store import (
     infer_verified_precision,
     looks_like_stable_identifier,
     parse_verified_utc,
+    register_has_explicit_case_track_columns,
     resolve_current_state,
     validate_row,
 )
@@ -26,8 +28,36 @@ REAL_REGISTER_CSV = (
 DEFAULT_KEY_PREFIX = ("personal", "test_track")  # matches helpers.make_row's defaults
 
 
-def key(source_ref_or_document: str, claim_id: str) -> tuple[str, str, str, str]:
-    return (*DEFAULT_KEY_PREFIX, source_ref_or_document, claim_id)
+def find_entry(resolved, source_ref_or_document, claim_id, case_id="personal", track_id="test_track"):
+    """Look up a resolve_current_state() entry by the identity its row was
+    built with, not by resolve_current_state()'s own key.
+
+    resolve_current_state()'s key is (case_id, track_id, evidence_id), and
+    evidence_id is a content hash a test can't predict by hand -- so tests
+    locate entries by the human-meaningful identity they actually set up
+    (case, track, claim, and either the source_ref or, when source_ref
+    isn't a stable identifier, the document title) instead. Raises if the
+    lookup isn't exactly one entry, so a broken test fails loudly rather
+    than silently comparing against None.
+    """
+    matches = [
+        entry
+        for entry in resolved.values()
+        if entry.row.case_id == case_id
+        and entry.row.track_id == track_id
+        and entry.row.claim_id == claim_id
+        and (
+            entry.row.payload.source_ref == source_ref_or_document
+            or entry.row.document == source_ref_or_document
+        )
+    ]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"expected exactly one entry for "
+            f"({case_id!r}, {track_id!r}, {source_ref_or_document!r}, {claim_id!r}), "
+            f"found {len(matches)}"
+        )
+    return matches[0]
 
 
 class EvidencePayloadTests(unittest.TestCase):
@@ -279,7 +309,7 @@ class ResolveCurrentStateTests(unittest.TestCase):
     def test_single_row_is_current_no_conflict(self):
         row = make_row(source_ref="doc-1")
         resolved = resolve_current_state([row])
-        entry = resolved[key("doc-1", "C99")]
+        entry = find_entry(resolved, "doc-1", "C99")
         self.assertEqual(entry.row, row)
         self.assertFalse(entry.conflict)
         self.assertTrue(entry.has_verified_timestamp)
@@ -293,14 +323,14 @@ class ResolveCurrentStateTests(unittest.TestCase):
         )
         newer = make_row(source_ref="doc-1", verified_utc="2026-06-01T00:00:00+00:00")
         resolved = resolve_current_state([older, newer])
-        self.assertEqual(resolved[key("doc-1", "C99")].row, newer)
-        self.assertFalse(resolved[key("doc-1", "C99")].conflict)
+        self.assertEqual(find_entry(resolved, "doc-1", "C99").row, newer)
+        self.assertFalse(find_entry(resolved, "doc-1", "C99").conflict)
 
     def test_no_timestamps_at_all_is_a_conflict(self):
         a = make_row(source_ref="doc-1", verified_utc="unknown")
         b = make_row(source_ref="doc-1", verified_utc="after-v4-snapshot")
         resolved = resolve_current_state([a, b])
-        self.assertTrue(resolved[key("doc-1", "C99")].conflict)
+        self.assertTrue(find_entry(resolved, "doc-1", "C99").conflict)
 
     def test_tied_newest_timestamps_is_a_conflict(self):
         a = make_row(
@@ -314,7 +344,7 @@ class ResolveCurrentStateTests(unittest.TestCase):
             verified_utc="2026-06-01T00:00:00+00:00",
         )
         resolved = resolve_current_state([a, b])
-        self.assertTrue(resolved[key("doc-1", "C99")].conflict)
+        self.assertTrue(find_entry(resolved, "doc-1", "C99").conflict)
 
     def test_groups_by_source_ref_not_document_title(self):
         a = make_row(source_ref="drive-id-123", document="Old Title")
@@ -346,10 +376,8 @@ class ResolveCurrentStateTests(unittest.TestCase):
         )
         resolved = resolve_current_state([a, b])
         self.assertEqual(len(resolved), 2)
-        self.assertIn(key("סיכום אשפוז", "C01"), resolved)
-        self.assertIn(key("IDF injury report", "C01"), resolved)
-        self.assertFalse(resolved[key("סיכום אשפוז", "C01")].conflict)
-        self.assertFalse(resolved[key("IDF injury report", "C01")].conflict)
+        self.assertFalse(find_entry(resolved, "סיכום אשפוז", "C01").conflict)
+        self.assertFalse(find_entry(resolved, "IDF injury report", "C01").conflict)
 
     def test_different_claims_on_same_document_do_not_collapse(self):
         c14 = make_row(
@@ -364,10 +392,55 @@ class ResolveCurrentStateTests(unittest.TestCase):
         )
         resolved = resolve_current_state([c14, c15])
         self.assertEqual(len(resolved), 2)
-        self.assertIn(key("drive-xyz", "C14"), resolved)
-        self.assertIn(key("drive-xyz", "C15"), resolved)
-        self.assertFalse(resolved[key("drive-xyz", "C14")].conflict)
-        self.assertFalse(resolved[key("drive-xyz", "C15")].conflict)
+        self.assertFalse(find_entry(resolved, "drive-xyz", "C14").conflict)
+        self.assertFalse(find_entry(resolved, "drive-xyz", "C15").conflict)
+
+    # --- regression: evidence_id hardening -- two distinct quotes for the
+    # same document/claim must not collapse (the C08 bug: this is the same
+    # claim-collapse bug class as C14/C15 above, recurring one layer down,
+    # inside a single claim rather than across two claims) ---
+    def test_same_document_same_claim_two_different_quotes_do_not_collapse(self):
+        quote_a = make_row(
+            claim_id="C08",
+            source_ref="drive-gour",
+            hebrew_verbatim="קיימת זיקה סיבתית בהסתברות גבוהה",
+            verified_utc="2026-07-29T10:00:00+00:00",
+        )
+        quote_b = make_row(
+            claim_id="C08",
+            source_ref="drive-gour",
+            hebrew_verbatim="נכות נוירולוגית כ-62.20% לצמיתות",
+            verified_utc="2026-07-29T11:00:00+00:00",
+        )
+        resolved = resolve_current_state([quote_a, quote_b])
+        self.assertEqual(len(resolved), 2)
+        rows = {entry.row for entry in resolved.values()}
+        self.assertEqual(rows, {quote_a, quote_b})
+        self.assertTrue(all(not entry.conflict for entry in resolved.values()))
+
+    def test_same_document_same_claim_same_quote_reverified_still_competes(self):
+        # The flip side: re-verifying the *identical* quote (same
+        # hebrew_verbatim, so same payload_hash) is not "two pieces of
+        # evidence" -- it's one piece of evidence checked twice, and must
+        # still land in a single group that the newest-timestamp/conflict
+        # logic can arbitrate, exactly as before evidence_id existed.
+        first_read = make_row(
+            claim_id="C08",
+            source_ref="drive-gour",
+            hebrew_verbatim="קיימת זיקה סיבתית בהסתברות גבוהה",
+            verified_utc="2026-07-29T10:00:00+00:00",
+        )
+        second_read = make_row(
+            claim_id="C08",
+            source_ref="drive-gour",
+            hebrew_verbatim="קיימת זיקה סיבתית בהסתברות גבוהה",
+            verified_utc="2026-07-30T10:00:00+00:00",
+        )
+        resolved = resolve_current_state([first_read, second_read])
+        self.assertEqual(len(resolved), 1)
+        entry = find_entry(resolved, "drive-gour", "C08")
+        self.assertEqual(entry.row, second_read)
+        self.assertFalse(entry.conflict)
 
     # --- explicit policy check: same-day date-only, different conclusions ---
     def test_same_day_date_only_rows_with_different_conclusions_conflict(self):
@@ -384,7 +457,7 @@ class ResolveCurrentStateTests(unittest.TestCase):
             output_gate="allowed_as_quote",
         )
         resolved = resolve_current_state([first_read, second_read_same_day])
-        entry = resolved[key("doc-1", "C99")]
+        entry = find_entry(resolved, "doc-1", "C99")
         self.assertTrue(entry.conflict)
         self.assertEqual(
             {r.payload.verified_precision for r in entry.candidates}, {"date"}
@@ -396,14 +469,43 @@ class ResolveCurrentStateTests(unittest.TestCase):
         brother = make_row(case_id="brother_case", source_ref="doc-1", claim_id="C01")
         resolved = resolve_current_state([alex, brother])
         self.assertEqual(len(resolved), 2)
-        self.assertIn(("alex_personal", "test_track", "doc-1", "C01"), resolved)
-        self.assertIn(("brother_case", "test_track", "doc-1", "C01"), resolved)
+        find_entry(resolved, "doc-1", "C01", case_id="alex_personal")
+        find_entry(resolved, "doc-1", "C01", case_id="brother_case")
 
     def test_same_claim_id_in_different_tracks_does_not_collide(self):
         a = make_row(track_id="takana9_ptsd_ms", source_ref="doc-1", claim_id="C01")
         b = make_row(track_id="ptsd_worsening", source_ref="doc-1", claim_id="C01")
         resolved = resolve_current_state([a, b])
         self.assertEqual(len(resolved), 2)
+
+
+class RegisterHasExplicitCaseTrackColumnsTests(unittest.TestCase):
+    """register_has_explicit_case_track_columns() -- the check that drives
+    cli.py's visible "scope was defaulted" note (see _warn_if_scope_defaulted
+    in cli.py and its tests in test_cli.py).
+    """
+
+    def _write(self, tmp: Path, fieldnames: list[str]) -> Path:
+        path = Path(tmp) / "register.csv"
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+        return path
+
+    def test_true_when_both_columns_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, ["document", "case_id", "track_id", "claim_id"])
+            self.assertTrue(register_has_explicit_case_track_columns(path))
+
+    def test_false_when_columns_entirely_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, ["document", "claim_id"])
+            self.assertFalse(register_has_explicit_case_track_columns(path))
+
+    def test_false_when_only_one_of_the_two_columns_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, ["document", "case_id", "claim_id"])
+            self.assertFalse(register_has_explicit_case_track_columns(path))
 
 
 @unittest.skipUnless(

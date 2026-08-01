@@ -139,6 +139,24 @@ def _is_placeholder(value: str) -> bool:
     return value.strip().lower() in PLACEHOLDER_TEXT_VALUES
 
 
+def _document_identity(document: str, source_ref: str) -> str:
+    """The best available stable reference to "which real document this is".
+
+    Prefers source_ref (a Drive file id or similar) since a title can be
+    re-transliterated or re-punctuated between register versions; falls
+    back to the document title when source_ref is a placeholder like
+    "unknown", or when it doesn't look like a real identifier at all -- a
+    free-text note accidentally used as source_ref (the C01 bug: two
+    different documents both got the note "needs_ocr per both parallel
+    passes" as their source_ref) must not be trusted as identity just
+    because it's non-empty.
+    """
+    ref = source_ref.strip()
+    if ref and not _is_placeholder(ref) and looks_like_stable_identifier(ref):
+        return ref
+    return document.strip()
+
+
 def looks_like_stable_identifier(value: str) -> bool:
     """Heuristic: does this source_ref look like an id/URL, not a prose note?
 
@@ -255,6 +273,41 @@ def compute_payload_hash(source_ref: str, hebrew_verbatim: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def compute_default_evidence_id(
+    case_id: str, track_id: str, document: str, source_ref: str,
+    claim_id: str, payload_hash: str,
+) -> str:
+    """Deterministic evidence_id for a row imported without an explicit one.
+
+    Encodes case + track + document identity + claim + content together --
+    this is what lets two genuinely different quotes from the same
+    document, for the same claim, coexist as two separate current entries
+    instead of colliding into one (a real bug: resolve_current_state() was
+    grouping by (case, track, document, claim) alone, so a second distinct
+    quote from Gour's opinion for C08 silently replaced the first one,
+    exactly the "claim collapse" bug class already fixed once for C14/C15,
+    just recurring one layer down). A *different* payload_hash always
+    produces a different evidence_id, so distinct quotes never compete.
+    Re-verifying the *same* quote later (same payload_hash) produces the
+    *same* evidence_id, so that re-read correctly competes/merges with the
+    earlier one under resolve_current_state()'s existing conflict logic --
+    this is deliberate, not a gap: an edited/corrected transcription of
+    the same quote changes payload_hash and is treated as new evidence,
+    which is honest (the exact wording of a citation matters), not
+    something this default silently smooths over.
+    """
+    identity = _document_identity(document, source_ref)
+    parts = [
+        _normalize_for_hash(case_id),
+        _normalize_for_hash(track_id),
+        _normalize_for_hash(identity),
+        _normalize_for_hash(claim_id),
+        _normalize_for_hash(payload_hash),
+    ]
+    normalized = "\x1f".join(parts)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class EvidencePayload:
     """The actual evidentiary content: what a source says, where it's from,
@@ -329,19 +382,32 @@ class EvidenceRow:
     with a completely different claim_support_status, because support is a
     property of the link, not of the document.
 
-    Atomic at (case_id, track_id, source_ref, claim_id): a document
-    supporting two different claims (e.g. one expert opinion backing both
-    C14 and C15) is two EvidenceRow records sharing one EvidencePayload,
-    not one row with both ids in it -- otherwise a later update to one
-    claim silently overwrites the other in resolve_current_state() (see
-    the "claim collapse" bug this fixed). Never mutated in place once
-    written to a store -- see EvidenceStore.
+    Atomic at (case_id, track_id, evidence_id): a document supporting two
+    different claims (e.g. one expert opinion backing both C14 and C15) is
+    two EvidenceRow records sharing one EvidencePayload, not one row with
+    both ids in it -- otherwise a later update to one claim silently
+    overwrites the other in resolve_current_state() (the "claim collapse"
+    bug this fixed). The same discipline applies *within* one claim too:
+    two genuinely different quotes from the same document for the same
+    claim get two different evidence_id values (see
+    compute_default_evidence_id), not one -- a second distinct quote must
+    never silently replace the first just because they share a document
+    and a claim. Never mutated in place once written to a store -- see
+    EvidenceStore.
     """
 
     document: str
     case_id: str
     track_id: str
     claim_id: str
+    # Identity of *this specific piece of evidence* (one quote, from one
+    # document, for one claim) -- see compute_default_evidence_id(). Two
+    # rows with the same evidence_id are treated as competing/updating
+    # opinions about the *same* evidence (resolve_current_state() picks
+    # the newer one or flags a conflict); two rows with different
+    # evidence_id values never compete, even if they share every other
+    # field, because they are not describing the same underlying fact.
+    evidence_id: str
     text_quality_status: str
     claim_support_status: str
     output_gate: str
@@ -358,32 +424,16 @@ class EvidenceRow:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
-    def key(self) -> tuple[str, str, str, str]:
-        """Stable identity for grouping rows about "the same claim".
+    def key(self) -> tuple[str, str, str]:
+        """Stable identity for grouping rows about "the same evidence".
 
-        (case_id, track_id, document identity, claim_id). case_id/track_id
-        are included so the same claim_id used by two different cases (or
-        two different tracks of the same case) never collides -- claim_id
-        alone is only unique *within* a (case, track) pair, by design (see
-        docs/product/ROADMAP.md).
-
-        Document identity prefers payload.source_ref (a Drive file id or
-        similar) since a title can be re-transliterated or re-punctuated
-        between register versions; falls back to the document title when
-        source_ref is a placeholder like "unknown", or when it doesn't
-        look like a real identifier at all -- a free-text note accidentally
-        used as source_ref (the C01 bug: two different documents both got
-        the note "needs_ocr per both parallel passes" as their source_ref,
-        and this identity check treated that as if they were the same
-        document) must not be trusted as identity just because it's
-        non-empty.
+        (case_id, track_id, evidence_id). case_id/track_id are kept as
+        explicit components (even though a properly-derived evidence_id
+        already encodes them) so a caller can filter/read them without
+        decoding a hash -- see docs/product/ROADMAP.md for why
+        case_id/track_id exist at all.
         """
-        ref = self.payload.source_ref.strip()
-        if ref and not _is_placeholder(ref) and looks_like_stable_identifier(ref):
-            identity = ref
-        else:
-            identity = self.document.strip()
-        return (self.case_id.strip(), self.track_id.strip(), identity, self.claim_id.strip())
+        return (self.case_id.strip(), self.track_id.strip(), self.evidence_id.strip())
 
 
 def validate_row(row: EvidenceRow) -> list[str]:
@@ -405,6 +455,8 @@ def validate_row(row: EvidenceRow) -> list[str]:
         problems.append("track_id must not be empty")
     if not row.claim_id.strip():
         problems.append("claim_id must not be empty")
+    if not row.evidence_id.strip():
+        problems.append("evidence_id must not be empty")
 
     if row.text_quality_status not in TEXT_QUALITY_STATUSES:
         problems.append(f"unknown text_quality_status: {row.text_quality_status!r}")
@@ -492,6 +544,7 @@ _CSV_COLUMNS = [
     "document",
     "case_id",
     "track_id",
+    "evidence_id",
     "source_ref",
     "source_note",
     "related_claims",
@@ -507,6 +560,27 @@ _CSV_COLUMNS = [
     "priority_in_track",
 ]
 
+# Columns whose presence in the CSV header signals "this register has been
+# migrated to explicit case/track scoping" -- see
+# register_has_explicit_case_track_columns(). Checked as a set of column
+# *names*, not per-row values: a register that has the columns but leaves
+# some cells blank is still "migrated", just incompletely filled in.
+_SCOPE_COLUMNS = frozenset({"case_id", "track_id"})
+
+
+def register_has_explicit_case_track_columns(path: str | Path) -> bool:
+    """Whether a register's CSV header declares case_id/track_id at all.
+
+    A register with neither column relies entirely on
+    DEFAULT_CASE_ID/DEFAULT_TRACK_ID for every row -- true of every
+    register that predates case/track scoping, and worth a visible,
+    once-per-run note (see cli.py) rather than a silent default someone
+    forgets about a month from now.
+    """
+    with open(path, encoding="utf-8-sig", newline="") as handle:
+        fieldnames = csv.DictReader(handle).fieldnames or []
+    return _SCOPE_COLUMNS.issubset(fieldnames)
+
 
 def import_csv(path: str | Path) -> list[EvidenceRow]:
     """Load a v6-style ocr_gap_register CSV into typed EvidenceRow records.
@@ -517,7 +591,11 @@ def import_csv(path: str | Path) -> list[EvidenceRow]:
     scope would fail validate_row()'s new non-empty check, silently
     breaking every pre-existing register on upgrade. There is also no
     payload_type/verified_precision/payload_hash column; those are derived
-    via infer_payload_type()/build_evidence_payload().
+    via infer_payload_type()/build_evidence_payload(). evidence_id is
+    similarly optional -- an empty cell gets a deterministic default from
+    compute_default_evidence_id(), so two distinct quotes for the same
+    document/claim in an old-style register still resolve as two separate
+    entries instead of colliding (see EvidenceRow's docstring).
 
     A CSV row whose related_claims cell names more than one claim (e.g.
     "C14; C15") becomes one EvidenceRow per claim id, sharing one
@@ -540,12 +618,18 @@ def import_csv(path: str | Path) -> list[EvidenceRow]:
                 source_note=values["source_note"],
             )
             for claim_id in _split_claim_ids(values["related_claims"]):
+                evidence_id = values["evidence_id"] or compute_default_evidence_id(
+                    case_id=case_id, track_id=track_id, document=values["document"],
+                    source_ref=values["source_ref"], claim_id=claim_id,
+                    payload_hash=payload.payload_hash,
+                )
                 rows.append(
                     EvidenceRow(
                         document=values["document"],
                         case_id=case_id,
                         track_id=track_id,
                         claim_id=claim_id,
+                        evidence_id=evidence_id,
                         text_quality_status=values["text_quality_status"],
                         claim_support_status=claim_support_status,
                         output_gate=values["output_gate"],
@@ -604,15 +688,21 @@ class ResolvedEvidence:
 
 def resolve_current_state(
     rows: Iterable[EvidenceRow],
-) -> dict[tuple[str, str, str, str], ResolvedEvidence]:
-    """Compute the current belief per (case_id, track_id, document, claim_id)
+) -> dict[tuple[str, str, str], ResolvedEvidence]:
+    """Compute the current belief per (case_id, track_id, evidence_id)
     from row history.
 
     Grouping is by EvidenceRow.key() -- NOT by document alone, so two
     different claims about the same document (e.g. C14 and C15 both about
     one expert opinion) resolve independently instead of one silently
-    overwriting the other, and NOT by claim_id alone, so the same claim_id
-    used in two different cases or tracks never collides.
+    overwriting the other; NOT by claim_id alone, so the same claim_id used
+    in two different cases or tracks never collides; and NOT by
+    (document, claim_id) alone either, so two genuinely different quotes
+    from the same document, backing the same claim, get distinct
+    evidence_ids and resolve as two separate entries instead of one
+    silently discarding the other. Only re-verifications of the *same*
+    quote (same evidence_id, e.g. a re-read confirming the same text) land
+    in one group and compete under the conflict logic below.
 
     Implements the Conflict Rule from case_prep_status_model_v3_provenance.md:
     prefer the row with the latest parseable verified_utc. If a winner can't
@@ -624,11 +714,11 @@ def resolve_current_state(
     midnight and tie under this same logic -- date precision alone cannot
     order same-day events, so that's a conflict too, not a coin flip.
     """
-    groups: dict[tuple[str, str, str, str], list[EvidenceRow]] = {}
+    groups: dict[tuple[str, str, str], list[EvidenceRow]] = {}
     for row in rows:
         groups.setdefault(row.key(), []).append(row)
 
-    resolved: dict[tuple[str, str, str, str], ResolvedEvidence] = {}
+    resolved: dict[tuple[str, str, str], ResolvedEvidence] = {}
     for key, group in groups.items():
         dated = [(parse_verified_utc(r.payload.verified_utc), r) for r in group]
         with_ts = [(ts, r) for ts, r in dated if ts is not None]

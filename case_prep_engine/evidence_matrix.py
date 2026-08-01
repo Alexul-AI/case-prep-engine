@@ -64,16 +64,19 @@ def build_evidence_matrix(rows: Iterable[EvidenceRow]) -> dict[ClaimKey, ClaimMa
     of a claim's source documents.
 
     Reuses resolve_current_state() rather than re-deriving "current" per
-    document -- a claim can be evidenced by more than one document (e.g. a
-    real committee transcript and a formal protocol both bearing on the
-    same claim), so this is a second grouping pass over
-    resolve_current_state's own output, by the (case_id, track_id,
-    claim_id) part of its key (dropping the document-identity part).
+    evidence_id -- a claim can be evidenced by more than one distinct piece
+    of evidence (e.g. a real committee transcript and a formal protocol
+    both bearing on the same claim, or two different quotes from the same
+    document), so this is a second grouping pass over
+    resolve_current_state's own output, reading each entry's own row
+    (case_id, track_id, claim_id) rather than unpacking
+    resolve_current_state's key -- that key is (case_id, track_id,
+    evidence_id), which has no claim_id component to unpack at all.
     Keying by claim_id alone would let the same claim_id in two different
     cases or tracks silently merge -- exactly the collision this scoping
     exists to prevent.
 
-    A conflicted (case, track, document, claim) entry always lands in
+    A conflicted (case, track, evidence_id) entry always lands in
     `conflicts`, never in supporting/negative_findings/contradictions --
     even though ResolvedEvidence still carries *some* row for a conflicted
     group (see resolve_current_state's docstring), that row was not
@@ -88,8 +91,9 @@ def build_evidence_matrix(rows: Iterable[EvidenceRow]) -> dict[ClaimKey, ClaimMa
     resolved = resolve_current_state(rows)
 
     grouped: dict[ClaimKey, list[ResolvedEvidence]] = {}
-    for (case_id, track_id, _document, claim_id), entry in resolved.items():
-        grouped.setdefault((case_id, track_id, claim_id), []).append(entry)
+    for entry in resolved.values():
+        row = entry.row
+        grouped.setdefault((row.case_id, row.track_id, row.claim_id), []).append(entry)
 
     matrix: dict[ClaimKey, ClaimMatrixEntry] = {}
     for (case_id, track_id, claim_id), entries in grouped.items():

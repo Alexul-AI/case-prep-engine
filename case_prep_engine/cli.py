@@ -15,7 +15,12 @@ from .claim_summary import (
     request_to_dict,
 )
 from .evidence_matrix import ClaimKey, ClaimMatrixEntry, build_evidence_matrix
-from .evidence_store import DEFAULT_CASE_ID, DEFAULT_TRACK_ID, import_csv
+from .evidence_store import (
+    DEFAULT_CASE_ID,
+    DEFAULT_TRACK_ID,
+    import_csv,
+    register_has_explicit_case_track_columns,
+)
 from .llm_adapter import JsonOnlyClaimSummaryLLM, LLMResponseError, parse_claim_summary_json
 
 EXIT_OK = 0
@@ -195,6 +200,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _warn_if_scope_defaulted(register: Path) -> None:
+    """Print a visible, non-error note when a register has no case_id/
+    track_id columns at all, so every row silently defaulted to
+    DEFAULT_CASE_ID/DEFAULT_TRACK_ID.
+
+    import_csv() already makes this safe (see its own docstring) -- this
+    is purely about not letting that default be *invisible*. A register
+    someone forgot to migrate would otherwise import cleanly and produce
+    plausible-looking output with zero indication that every row landed in
+    one case/track by default rather than by an actual decision.
+    """
+    if not register_has_explicit_case_track_columns(register):
+        print(
+            f"note: {register} has no case_id/track_id columns -- every row "
+            f"defaulted to case_id={DEFAULT_CASE_ID!r}, track_id={DEFAULT_TRACK_ID!r}. "
+            "Add those columns to the CSV to scope rows explicitly.",
+            file=sys.stderr,
+        )
+
+
 _LIST_CLAIMS_BUCKETS: tuple[tuple[str, str], ...] = (
     ("supporting", "supported"),
     ("negative_findings", "not_supported"),
@@ -224,6 +249,7 @@ def _run_summarize_claim(args: argparse.Namespace) -> int:
     if not args.register.exists():
         print(f"error: register file not found: {args.register}", file=sys.stderr)
         return EXIT_REGISTER_NOT_FOUND
+    _warn_if_scope_defaulted(args.register)
 
     rows = import_csv(args.register)
     matrix = build_evidence_matrix(rows)
@@ -296,6 +322,7 @@ def _run_export_claim_prompt(args: argparse.Namespace) -> int:
     if not args.register.exists():
         print(f"error: register file not found: {args.register}", file=sys.stderr)
         return EXIT_REGISTER_NOT_FOUND
+    _warn_if_scope_defaulted(args.register)
 
     rows = import_csv(args.register)
     matrix = build_evidence_matrix(rows)

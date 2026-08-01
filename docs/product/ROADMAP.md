@@ -5,7 +5,7 @@ what the product is/for whom/scope — this file is only "where things
 stand and what's next"). Mirrors the `docs/product/ROADMAP.md` convention
 used in the author's other repos — read this before proposing new work.
 
-## Architecture built so far (2026-07-30 → 2026-08-01, 142 tests)
+## Architecture built so far (2026-07-30 → 2026-08-01, 149 tests)
 
 Each stage below was built directly on the previous one, in order, and
 each one deliberately stayed *simpler* than the temptation to skip ahead
@@ -73,6 +73,36 @@ each one deliberately stayed *simpler* than the temptation to skip ahead
     support) are different things, so the same Greenhouse-style quote
     backing two different tracks' claims is one piece of evidence, not
     two hashed differently.
+11. **`evidence_id` hardening** (2026-08-01) — fixes a claim-collapse bug
+    one layer deeper than item 10 already fixed: `resolve_current_state()`
+    was grouping by `(case_id, track_id, document, claim_id)`, so two
+    genuinely *different* quotes from the same document, backing the same
+    claim (e.g. two separate excerpts from Dr. Gour's opinion both cited
+    for C08), silently collapsed into one — the newer-timestamped quote
+    replacing the older one with no conflict raised, discarding real
+    evidence. Confirmed empirically before fixing (two synthetic rows,
+    same case/track/claim/source_ref, different `hebrew_verbatim`, and
+    `resolve_current_state()` returned 1 entry instead of 2). Fix: a new
+    `evidence_id` field on `EvidenceRow` becomes the true grouping key
+    (`EvidenceRow.key()` is now `(case_id, track_id, evidence_id)`, not the
+    old 4-tuple). `compute_default_evidence_id()` derives it from
+    `case_id + track_id + document_identity + claim_id + payload_hash`, so
+    an old-style CSV with no `evidence_id` column still gets distinct ids
+    for distinct quotes automatically, while a genuine re-verification of
+    the *same* quote (same `payload_hash`) still gets the *same*
+    `evidence_id` and correctly competes under the existing
+    newest-timestamp/conflict logic — re-verification and new-evidence stay
+    distinguishable, on purpose. `evidence_matrix.py`/`timeline.py` updated
+    to read `(case_id, track_id, claim_id)` off each resolved row directly
+    rather than unpacking `resolve_current_state()`'s key (which no longer
+    carries a claim_id component at all). Also added, same PR: a visible
+    (non-error) CLI note — `register_has_explicit_case_track_columns()` +
+    `cli.py`'s `_warn_if_scope_defaulted()` — printed to stderr whenever a
+    register has no `case_id`/`track_id` columns at all, so silently
+    defaulting every row to `personal`/`takana9_ptsd_ms` is visible instead
+    of invisible. New regression tests lock in both the fix (two distinct
+    quotes never collapse) and the pre-existing behavior it must not break
+    (a same-quote re-verification still competes as one group).
 
 ## Design rules that have held since day one
 
@@ -97,14 +127,20 @@ each one deliberately stayed *simpler* than the temptation to skip ahead
 
 ## Next up
 
-Re-classifying which existing evidence also applies to the newer tracks
-(e.g. the Greenhouse psychiatric opinion likely bears on both the
-`takana9_ptsd_ms` causal claim it already backs and a `ptsd_worsening`
-claim it hasn't been linked to yet) is a **substance decision about the
-case**, not an engineering one — deliberately left to the author to do by
-hand (add a new register row with the existing source_ref, a new
-claim_id, and the new track_id), not silently inferred during any
-migration.
+With item 11's `evidence_id` hardening landed, the structural edge case
+that was blocking this is closed — re-classification can proceed:
+
+1. **Re-classify which existing evidence also applies to the newer
+   tracks** (e.g. the Greenhouse psychiatric opinion likely bears on both
+   the `takana9_ptsd_ms` causal claim it already backs and a
+   `ptsd_worsening` claim it hasn't been linked to yet). A **substance
+   decision about the case**, not an engineering one — deliberately left
+   to the author to do by hand (add a new register row with the existing
+   source_ref, a new claim_id, and the new track_id), not silently
+   inferred during any migration.
+2. **Manual LLM bridge testing on the new case_id/track_id scoping** —
+   run `export-claim-prompt`/`validate-summary` against claims that
+   actually use a non-default case/track, once step 1 has produced some.
 
 ## Deferred (planned, not started, in this order)
 

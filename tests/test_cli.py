@@ -245,6 +245,35 @@ class CliSummarizeClaimTests(unittest.TestCase):
         self.assertNotEqual(exit_code, 0)
         self.assertIn("no claim", stderr)
 
+    def test_register_with_no_case_track_columns_prints_a_visible_note(self):
+        # This suite's own write_register() never writes case_id/track_id
+        # columns -- exercising the exact "old-style register" scenario
+        # the note exists for.
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--claim-id", "C-SUP",
+             "--register", str(self.register), "--fake"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("no case_id/track_id columns", stderr)
+        self.assertIn("personal", stderr)
+        self.assertIn("takana9_ptsd_ms", stderr)
+
+    def test_register_with_explicit_case_track_columns_prints_no_note(self):
+        register = Path(self._tmp.name) / "scoped_register.csv"
+        with open(register, "w", encoding="utf-8", newline="") as handle:
+            fieldnames = ["case_id", "track_id", *_CSV_COLUMNS]
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            row = _row("Supported doc", "C-SUP", source_ref="Drive fileId sup1")
+            row["case_id"] = "personal"
+            row["track_id"] = "takana9_ptsd_ms"
+            writer.writerow(row)
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--claim-id", "C-SUP", "--register", str(register), "--fake"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertNotIn("no case_id/track_id columns", stderr)
+
     def test_output_file_is_written_as_utf8(self):
         out_path = Path(self._tmp.name) / "out.json"
         exit_code, stdout, stderr = run_cli(
