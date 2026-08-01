@@ -420,6 +420,19 @@ class EvidenceRow:
     # ordering the real register already uses.
     track: str = ""
     priority_in_track: str = ""
+    # A caveat about *this payload-to-claim link specifically* (e.g.
+    # "candidate Track B link; excerpt-level review only") -- deliberately
+    # separate from payload.source_note, which is a private/operational
+    # note that never reaches a prompt (see render_payload_block's
+    # docstring). claim_link_caveat is the opposite: it is *meant* to reach
+    # the model, and claim_summary.py's validator requires it be reflected
+    # in the summary (must_not_say/open_risks) and blocks status='supported'
+    # while it's present -- see claim_summary.py's EvidenceItem/
+    # validate_claim_summary. Not part of payload_hash or evidence_id: it
+    # describes confidence in the *link*, not the content, and can change
+    # over time (e.g. cleared once a full review confirms the link) without
+    # that being a new piece of evidence.
+    claim_link_caveat: str = ""
     row_written_utc: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -558,6 +571,7 @@ _CSV_COLUMNS = [
     "evidence_payload_hebrew_verbatim",
     "track",
     "priority_in_track",
+    "claim_link_caveat",
 ]
 
 # Columns whose presence in the CSV header signals "this register has been
@@ -599,7 +613,9 @@ def import_csv(path: str | Path) -> list[EvidenceRow]:
 
     A CSV row whose related_claims cell names more than one claim (e.g.
     "C14; C15") becomes one EvidenceRow per claim id, sharing one
-    EvidencePayload -- see EvidenceRow's docstring for why.
+    EvidencePayload -- see EvidenceRow's docstring for why. claim_link_caveat
+    is blank by default (most rows have none) -- see EvidenceRow's own
+    docstring for what it means and how it differs from source_note.
     """
     rows: list[EvidenceRow] = []
     with open(path, encoding="utf-8-sig", newline="") as handle:
@@ -638,6 +654,7 @@ def import_csv(path: str | Path) -> list[EvidenceRow]:
                         payload=payload,
                         track=values["track"],
                         priority_in_track=values["priority_in_track"],
+                        claim_link_caveat=values["claim_link_caveat"],
                     )
                 )
     return rows

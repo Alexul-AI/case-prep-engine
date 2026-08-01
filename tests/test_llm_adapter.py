@@ -175,7 +175,7 @@ class RealRegisterLLMAdapterTests(unittest.TestCase):
     def test_json_only_llm_round_trip_against_real_c08_request(self):
         rows = import_csv(REAL_REGISTER_CSV)
         request = request_for(rows, "C08", track_id="takana9_ptsd_ms")
-        gour_hash = request.supporting[0].payload_hash
+        gour_hash = request.supporting[0].payload.payload_hash
 
         def fake_completion(prompt: str) -> str:
             return json.dumps(

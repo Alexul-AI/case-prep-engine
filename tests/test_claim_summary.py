@@ -246,6 +246,76 @@ class ContradictionConflictAndMustNotSayTests(unittest.TestCase):
         self.assertEqual(validate_claim_summary(summary, request), [])
 
 
+class ClaimLinkCaveatTests(unittest.TestCase):
+    """claim_link_caveat: a risk signal about the payload-to-claim *link*
+    (e.g. a candidate/excerpt-level link), not the payload's content --
+    modeled on the real B03 (July-2025-protocol) Track B evidence-linking
+    case. Deliberately separate from the contradiction/conflict/
+    negative-finding rules above: a caveat can exist with none of those
+    also being true, and this rule must still fire on its own.
+    """
+
+    def test_caveat_forbids_supported_status(self):
+        row = make_row(
+            claim_id="B03-like",
+            hebrew_verbatim="במהלך הבדיקה נרשמה החמרה, לצד התרשמות משיפור תפקודי",
+            claim_link_caveat="candidate link; excerpt-level review only",
+        )
+        request = request_for([row], claim_id="B03-like")
+
+        supported = ClaimSummary(
+            claim_id="B03-like", status="supported", summary_he="", summary_ru="",
+            allowed_uses=(), must_not_say=("claim is settled without qualification",),
+            citations=(row.payload.payload_hash,), open_risks=(),
+        )
+        problems = validate_claim_summary(supported, request)
+        self.assertTrue(any("claim_link_caveat" in p for p in problems))
+
+    def test_caveat_accepts_supported_with_risks_status(self):
+        row = make_row(
+            claim_id="B03-like",
+            hebrew_verbatim="במהלך הבדיקה נרשמה החמרה, לצד התרשמות משיפור תפקודי",
+            claim_link_caveat="candidate link; excerpt-level review only",
+        )
+        request = request_for([row], claim_id="B03-like")
+
+        supported_with_risks = ClaimSummary(
+            claim_id="B03-like", status="supported_with_risks", summary_he="", summary_ru="",
+            allowed_uses=(), must_not_say=(),
+            citations=(row.payload.payload_hash,),
+            open_risks=("supporting evidence is a candidate link only",),
+        )
+        self.assertEqual(validate_claim_summary(supported_with_risks, request), [])
+
+    def test_caveat_must_be_reflected_in_must_not_say_or_open_risks(self):
+        row = make_row(
+            claim_id="B03-like",
+            hebrew_verbatim="במהלך הבדיקה נרשמה החמרה, לצד התרשמות משיפור תפקודי",
+            claim_link_caveat="candidate link; excerpt-level review only",
+        )
+        request = request_for([row], claim_id="B03-like")
+
+        silent = ClaimSummary(
+            claim_id="B03-like", status="supported_with_risks", summary_he="", summary_ru="",
+            allowed_uses=(), must_not_say=(), citations=(row.payload.payload_hash,), open_risks=(),
+        )
+        problems = validate_claim_summary(silent, request)
+        self.assertTrue(any("must be reflected in open_risks or must_not_say" in p for p in problems))
+
+    def test_no_caveat_allows_supported_as_before(self):
+        # Regression guard: a plain row with no claim_link_caveat (the
+        # overwhelming majority of the register) must be completely
+        # unaffected by this rule.
+        row = make_row(claim_id="C99")
+        request = request_for([row])
+        summary = ClaimSummary(
+            claim_id="C99", status="supported", summary_he="", summary_ru="",
+            allowed_uses=(), must_not_say=(),
+            citations=(row.payload.payload_hash,), open_risks=(),
+        )
+        self.assertEqual(validate_claim_summary(summary, request), [])
+
+
 class BuildClaimSummaryPromptTests(unittest.TestCase):
     def test_prompt_contains_claim_id_and_hash_and_rules(self):
         row = make_row(claim_id="C08", hebrew_verbatim="דוגמת ציטוט")
@@ -278,7 +348,7 @@ class RealRegisterClaimSummaryTests(unittest.TestCase):
     def test_real_gour_quote_validates_against_real_request(self):
         rows = import_csv(REAL_REGISTER_CSV)
         request = request_for(rows, "C08", track_id="takana9_ptsd_ms")
-        gour_hash = request.supporting[0].payload_hash
+        gour_hash = request.supporting[0].payload.payload_hash
 
         summary = ClaimSummary(
             claim_id="C08",

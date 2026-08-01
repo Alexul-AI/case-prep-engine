@@ -44,22 +44,25 @@ def make_fake_completion(request: ClaimSummaryRequest) -> Callable[[str], str]:
 
     Behaves differently per scenario on purpose (conflict -> blocked,
     contradiction -> contradicted, negative finding -> not_supported,
-    supporting -> supported, nothing checked -> blocked) -- a fake that
+    supporting with a claim_link_caveat -> supported_with_risks, supporting
+    with no caveat -> supported, nothing checked -> blocked) -- a fake that
     always returned the same safe-looking answer wouldn't actually
     smoke-test validate_claim_summary()'s harder rules (must_not_say,
-    open_risks, the conflict-forbids-supported rule). Summary text is
-    fixed, generic prose deliberately free of quote marks and
-    causal-language keywords, so it can never accidentally trip the
-    quote-verbatim or causal-wording checks regardless of what the real
-    payload text says. Every "blocked" path also fills open_risks with a
-    concrete reason -- not required by validate_claim_summary() (neither
-    branch has a contradiction/conflict/negative_finding by itself needing
-    it), but a "blocked" result with no stated reason is a bad UX result
-    even when it's a technically valid one.
+    open_risks, the conflict-forbids-supported rule, the
+    caveat-forbids-supported rule). Summary text is fixed, generic prose
+    deliberately free of quote marks and causal-language keywords, so it
+    can never accidentally trip the quote-verbatim or causal-wording
+    checks regardless of what the real payload text says. Every "blocked"
+    path also fills open_risks with a concrete reason -- not required by
+    validate_claim_summary() (neither branch has a
+    contradiction/conflict/negative_finding by itself needing it), but a
+    "blocked" result with no stated reason is a bad UX result even when
+    it's a technically valid one.
     """
 
     def _fake(prompt: str) -> str:
         del prompt  # a real provider reads this; the fake reads `request` directly
+        has_caveat = any(item.claim_link_caveat.strip() for item in request.supporting)
 
         if request.has_unresolved_conflict:
             payload = {
@@ -71,7 +74,7 @@ def make_fake_completion(request: ClaimSummaryRequest) -> Callable[[str], str]:
                 "open_risks": ["unresolved conflict on this claim"],
             }
         elif request.contradictions:
-            hashes = [p.payload_hash for p in (*request.contradictions, *request.supporting)]
+            hashes = [item.payload.payload_hash for item in (*request.contradictions, *request.supporting)]
             payload = {
                 "status": "contradicted",
                 "summary_he": "קיימת ראיה שנבדקה הסותרת את התביעה.",
@@ -81,7 +84,7 @@ def make_fake_completion(request: ClaimSummaryRequest) -> Callable[[str], str]:
                 "open_risks": ["a contradicting document exists for this claim"],
             }
         elif request.negative_findings:
-            hashes = [p.payload_hash for p in request.negative_findings]
+            hashes = [item.payload.payload_hash for item in request.negative_findings]
             payload = {
                 "status": "not_supported",
                 "summary_he": "הראיה נבדקה ולא נמצא בה תימוך לתביעה.",
@@ -90,8 +93,18 @@ def make_fake_completion(request: ClaimSummaryRequest) -> Callable[[str], str]:
                 "must_not_say": ["claim is supported"],
                 "open_risks": [],
             }
+        elif request.supporting and has_caveat:
+            hashes = [item.payload.payload_hash for item in request.supporting]
+            payload = {
+                "status": "supported_with_risks",
+                "summary_he": "קיים תימוך בראיה שנבדקה לתביעה זו, אך קיימת הסתייגות לגבי הקישור בין הראיה לתביעה.",
+                "summary_ru": "В проверенном доказательстве есть подтверждение этому утверждению, но есть оговорка о связи доказательства с утверждением.",
+                "citations": hashes,
+                "must_not_say": ["claim is settled without qualification"],
+                "open_risks": ["supporting evidence carries a claim-link caveat -- see the evidence block"],
+            }
         elif request.supporting:
-            hashes = [p.payload_hash for p in request.supporting]
+            hashes = [item.payload.payload_hash for item in request.supporting]
             payload = {
                 "status": "supported",
                 "summary_he": "קיים תימוך בראיה שנבדקה לתביעה זו.",

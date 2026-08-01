@@ -425,7 +425,7 @@ class ManualBridgeTests(unittest.TestCase):
 
     def test_validate_summary_accepts_a_correct_hand_written_reply(self):
         self._export()
-        real_hash = json.loads(self.request_path.read_text(encoding="utf-8"))["supporting"][0]["payload_hash"]
+        real_hash = json.loads(self.request_path.read_text(encoding="utf-8"))["supporting"][0]["payload"]["payload_hash"]
         summary_path = Path(self._tmp.name) / "reply.json"
         summary_path.write_text(
             json.dumps({
@@ -480,7 +480,7 @@ class ManualBridgeTests(unittest.TestCase):
         # the exact snapshot the model actually saw, not a fresh
         # re-derivation that could now disagree with it.
         self._export()
-        real_hash = json.loads(self.request_path.read_text(encoding="utf-8"))["supporting"][0]["payload_hash"]
+        real_hash = json.loads(self.request_path.read_text(encoding="utf-8"))["supporting"][0]["payload"]["payload_hash"]
 
         # Mutate the register after export -- add a contradiction for the
         # same claim. A live re-derivation would now see has_contradiction,

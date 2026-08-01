@@ -22,8 +22,8 @@ Respond with exactly one JSON object matching this schema, and nothing else -- n
 }
 
 Status meaning:
-- "supported": clean supporting evidence exists, with no contradiction, no negative finding, and no unresolved conflict.
-- "supported_with_risks": supporting evidence exists, but so does a contradiction, a negative finding, or an unresolved conflict that must be disclosed.
+- "supported": clean supporting evidence exists, with no contradiction, no negative finding, no unresolved conflict, and no caveat on the evidence link itself.
+- "supported_with_risks": supporting evidence exists, but so does a contradiction, a negative finding, an unresolved conflict, or a caveat on the evidence link itself, that must be disclosed.
 - "contradicted": a contradiction is the evidence that matters most here.
 - "not_supported": a negative finding (checked, not supported) exists and there is no real support.
 - "blocked": nothing usable has been checked for this claim yet, or an unresolved conflict makes any conclusion unsafe.
@@ -37,3 +37,4 @@ Hard rules:
 - If negative findings are listed above, cite them -- they are not a weaker version of missing evidence, they are a real finding.
 - If an unresolved conflict is listed above, status must not be 'supported'.
 - If a contradiction, unresolved conflict, or negative finding applies, must_not_say cannot be empty.
+- If any supporting evidence above has a 'caveat' line, status must not be 'supported' -- use 'supported_with_risks' unless a stronger rule above already applies -- and the caveat must be reflected in must_not_say or open_risks, not silently dropped.

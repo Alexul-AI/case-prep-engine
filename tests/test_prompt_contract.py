@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from case_prep_engine.claim_summary import (
+    EvidenceItem,
     build_claim_summary_prompt,
     extract_allowed_payload_hashes,
     render_payload_block,
@@ -113,6 +114,17 @@ class GoldenPromptTests(unittest.TestCase):
         ])
         assert_matches_golden(self, build_claim_summary_prompt(request), "causal_wording")
 
+    def test_claim_link_caveat(self):
+        request = request_for([
+            make_row(
+                claim_id="C-GOLDEN",
+                source_ref="Drive fileId golden0000000000claimlinkcaveat",
+                hebrew_verbatim="במהלך הבדיקה נרשמה החמרה במצב, לצד התרשמות משיפור תפקודי",
+                claim_link_caveat="candidate link; excerpt-level review only, full context not yet reviewed",
+            )
+        ])
+        assert_matches_golden(self, build_claim_summary_prompt(request), "claim_link_caveat")
+
     def test_quote_safety_dr_abbreviation(self):
         # A payload with embedded Hebrew gershayim (ד"ר, כ"הס -- the exact
         # pattern in the real Gour document) must render unmangled and
@@ -146,7 +158,7 @@ class RenderPayloadBlockPrivacyGuardTests(unittest.TestCase):
             translation_ru="Пример текста -- MUST NOT LEAK",
             source_note="internal note -- MUST NOT LEAK",
         )
-        block = render_payload_block(payload)
+        block = render_payload_block(EvidenceItem(payload=payload))
         self.assertIn(payload.payload_hash, block)
         self.assertIn(payload.source_ref, block)
         self.assertIn(payload.hebrew_verbatim, block)
@@ -154,6 +166,33 @@ class RenderPayloadBlockPrivacyGuardTests(unittest.TestCase):
         self.assertNotIn(payload.translation_ru, block)
         self.assertNotIn(payload.source_location, block)
         self.assertNotIn(payload.source_note, block)
+
+    def test_render_payload_block_shows_claim_link_caveat_when_present(self):
+        # The one deliberate exception to "payload content only" above --
+        # claim_link_caveat is a link-level risk signal meant to reach the
+        # model, unlike source_note (private, never rendered, checked above).
+        payload = build_evidence_payload(
+            hebrew_verbatim="דוגמת טקסט לבדיקה",
+            source_ref="Drive fileId caveat-check-ref",
+            verification_method="drive_fetch",
+            verified_by_actor="tester",
+            verified_utc="2026-07-29",
+        )
+        block = render_payload_block(
+            EvidenceItem(payload=payload, claim_link_caveat="candidate link; needs full review")
+        )
+        self.assertIn("candidate link; needs full review", block)
+
+    def test_render_payload_block_omits_caveat_line_when_absent(self):
+        payload = build_evidence_payload(
+            hebrew_verbatim="דוגמת טקסט לבדיקה",
+            source_ref="Drive fileId no-caveat-ref",
+            verification_method="drive_fetch",
+            verified_by_actor="tester",
+            verified_utc="2026-07-29",
+        )
+        block = render_payload_block(EvidenceItem(payload=payload))
+        self.assertNotIn("caveat:", block)
 
     def test_prompt_never_leaks_hidden_payload_fields(self):
         row = make_row(

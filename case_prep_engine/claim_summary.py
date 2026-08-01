@@ -55,6 +55,33 @@ def _extract_quoted_spans(text: str) -> list[str]:
 
 
 @dataclass(frozen=True)
+class EvidenceItem:
+    """One piece of evidence as it appears in a ClaimSummaryRequest: the
+    payload itself, plus an optional claim_link_caveat carried over from
+    EvidenceRow.claim_link_caveat.
+
+    This is the payload-content/link-property split (EvidencePayload vs.
+    EvidenceRow, see evidence_store.py) reflected one layer up: the caveat
+    describes this specific payload-to-claim link (e.g. "candidate link,
+    excerpt-level review only"), not the payload's content, so it lives
+    beside the payload here rather than being folded into it. Deliberately
+    prompt-visible -- unlike EvidencePayload.source_note, which
+    render_payload_block() never renders -- see claim_link_caveat's own
+    docstring on EvidenceRow for that distinction.
+    """
+
+    payload: EvidencePayload
+    claim_link_caveat: str = ""
+
+
+def _to_evidence_item(resolved) -> EvidenceItem:
+    return EvidenceItem(
+        payload=resolved.row.payload,
+        claim_link_caveat=resolved.row.claim_link_caveat,
+    )
+
+
+@dataclass(frozen=True)
 class ClaimSummaryRequest:
     """Everything an LLM (or a human) needs to summarize one claim, and
     nothing else -- no raw ungated evidence, no other claims' evidence, no
@@ -71,9 +98,9 @@ class ClaimSummaryRequest:
     case_id: str
     track_id: str
     claim_id: str
-    supporting: tuple[EvidencePayload, ...]
-    negative_findings: tuple[EvidencePayload, ...]
-    contradictions: tuple[EvidencePayload, ...]
+    supporting: tuple[EvidenceItem, ...]
+    negative_findings: tuple[EvidenceItem, ...]
+    contradictions: tuple[EvidenceItem, ...]
     has_unresolved_conflict: bool
     has_unresolved_evidence: bool  # entry.unresolved non-empty: documents not yet checked at all
 
@@ -83,9 +110,9 @@ def build_claim_summary_request(entry: ClaimMatrixEntry) -> ClaimSummaryRequest:
         case_id=entry.case_id,
         track_id=entry.track_id,
         claim_id=entry.claim_id,
-        supporting=tuple(r.row.payload for r in entry.supporting),
-        negative_findings=tuple(r.row.payload for r in entry.negative_findings),
-        contradictions=tuple(r.row.payload for r in entry.contradictions),
+        supporting=tuple(_to_evidence_item(r) for r in entry.supporting),
+        negative_findings=tuple(_to_evidence_item(r) for r in entry.negative_findings),
+        contradictions=tuple(_to_evidence_item(r) for r in entry.contradictions),
         has_unresolved_conflict=entry.has_unresolved_conflict,
         has_unresolved_evidence=bool(entry.unresolved),
     )
@@ -108,29 +135,41 @@ def request_to_dict(request: ClaimSummaryRequest) -> dict:
     return asdict(request)
 
 
+def _evidence_item_from_dict(data: dict) -> EvidenceItem:
+    return EvidenceItem(
+        payload=EvidencePayload(**data["payload"]),
+        claim_link_caveat=data.get("claim_link_caveat", ""),
+    )
+
+
 def request_from_dict(data: dict) -> ClaimSummaryRequest:
     return ClaimSummaryRequest(
         case_id=data["case_id"],
         track_id=data["track_id"],
         claim_id=data["claim_id"],
-        supporting=tuple(EvidencePayload(**p) for p in data["supporting"]),
-        negative_findings=tuple(EvidencePayload(**p) for p in data["negative_findings"]),
-        contradictions=tuple(EvidencePayload(**p) for p in data["contradictions"]),
+        supporting=tuple(_evidence_item_from_dict(p) for p in data["supporting"]),
+        negative_findings=tuple(_evidence_item_from_dict(p) for p in data["negative_findings"]),
+        contradictions=tuple(_evidence_item_from_dict(p) for p in data["contradictions"]),
         has_unresolved_conflict=data["has_unresolved_conflict"],
         has_unresolved_evidence=data["has_unresolved_evidence"],
     )
 
 
-def _citable_payloads(request: ClaimSummaryRequest) -> tuple[EvidencePayload, ...]:
-    """Every payload a response is allowed to cite -- the single definition
-    of "citable" shared by extract_allowed_payload_hashes(), the prompt
-    builder, and validate_claim_summary(), so they can never quietly drift
-    apart. Deliberately excludes unchecked evidence (has_unresolved_evidence
-    is a bool, not a payload list -- there is nothing behind it to cite)
-    and unresolved conflicts (citing one as if it were settled is exactly
-    the failure mode this module exists to prevent).
+def _citable_items(request: ClaimSummaryRequest) -> tuple[EvidenceItem, ...]:
+    """Every evidence item a response is allowed to cite -- the single
+    definition of "citable" shared by extract_allowed_payload_hashes(), the
+    prompt builder, and validate_claim_summary(), so they can never quietly
+    drift apart. Deliberately excludes unchecked evidence
+    (has_unresolved_evidence is a bool, not a payload list -- there is
+    nothing behind it to cite) and unresolved conflicts (citing one as if
+    it were settled is exactly the failure mode this module exists to
+    prevent).
     """
     return (*request.supporting, *request.negative_findings, *request.contradictions)
+
+
+def _citable_payloads(request: ClaimSummaryRequest) -> tuple[EvidencePayload, ...]:
+    return tuple(item.payload for item in _citable_items(request))
 
 
 def extract_allowed_payload_hashes(request: ClaimSummaryRequest) -> frozenset[str]:
@@ -138,15 +177,18 @@ def extract_allowed_payload_hashes(request: ClaimSummaryRequest) -> frozenset[st
     return frozenset(p.payload_hash for p in _citable_payloads(request))
 
 
-def render_payload_block(payload: EvidencePayload) -> str:
-    """Render one payload as the fixed two-line block used in the prompt.
+def render_payload_block(item: EvidenceItem) -> str:
+    """Render one evidence item as the fixed block used in the prompt.
 
-    Deliberately minimal: hash, source_ref, and hebrew_verbatim only --
-    never translation_ru, source_location, or source_note (those exist on
-    EvidencePayload for local bookkeeping, not for a model to see), and
-    never a document title or any other field from the wider case file.
-    This is the actual privacy boundary: a model summarizing one claim
-    sees exactly what's rendered here and nothing else.
+    Deliberately minimal: hash, source_ref, hebrew_verbatim, and (only if
+    present) claim_link_caveat -- never translation_ru, source_location, or
+    source_note (those exist on EvidencePayload for local bookkeeping, not
+    for a model to see), and never a document title or any other field
+    from the wider case file. This is the actual privacy boundary: a model
+    summarizing one claim sees exactly what's rendered here and nothing
+    else. claim_link_caveat is the one deliberate exception to "payload
+    content only" -- it's a link-level risk signal meant to reach the
+    model (see EvidenceItem's docstring), not private bookkeeping.
 
     Does not wrap hebrew_verbatim in ASCII quote marks: real payload text
     routinely contains its own embedded Hebrew gershayim mid-word (ד"ר,
@@ -154,14 +196,18 @@ def render_payload_block(payload: EvidencePayload) -> str:
     wrapping quote closed early. The "text:" label plus indentation is
     enough to mark the boundary without introducing that ambiguity.
     """
-    return f"  - hash={payload.payload_hash} source_ref={payload.source_ref}\n    text: {payload.hebrew_verbatim}"
+    payload = item.payload
+    block = f"  - hash={payload.payload_hash} source_ref={payload.source_ref}\n    text: {payload.hebrew_verbatim}"
+    if item.claim_link_caveat.strip():
+        block += f"\n    caveat: {item.claim_link_caveat}"
+    return block
 
 
-def _format_payload_block(label: str, payloads: tuple[EvidencePayload, ...]) -> str:
-    if not payloads:
+def _format_payload_block(label: str, items: tuple[EvidenceItem, ...]) -> str:
+    if not items:
         return f"{label}: (none)"
     lines = [f"{label}:"]
-    lines.extend(render_payload_block(p) for p in payloads)
+    lines.extend(render_payload_block(item) for item in items)
     return "\n".join(lines)
 
 
@@ -179,8 +225,8 @@ Respond with exactly one JSON object matching this schema, and nothing else -- n
 }
 
 Status meaning:
-- "supported": clean supporting evidence exists, with no contradiction, no negative finding, and no unresolved conflict.
-- "supported_with_risks": supporting evidence exists, but so does a contradiction, a negative finding, or an unresolved conflict that must be disclosed.
+- "supported": clean supporting evidence exists, with no contradiction, no negative finding, no unresolved conflict, and no caveat on the evidence link itself.
+- "supported_with_risks": supporting evidence exists, but so does a contradiction, a negative finding, an unresolved conflict, or a caveat on the evidence link itself, that must be disclosed.
 - "contradicted": a contradiction is the evidence that matters most here.
 - "not_supported": a negative finding (checked, not supported) exists and there is no real support.
 - "blocked": nothing usable has been checked for this claim yet, or an unresolved conflict makes any conclusion unsafe."""
@@ -226,6 +272,10 @@ def build_claim_summary_prompt(request: ClaimSummaryRequest) -> str:
         "- If an unresolved conflict is listed above, status must not be 'supported'.",
         "- If a contradiction, unresolved conflict, or negative finding "
         "applies, must_not_say cannot be empty.",
+        "- If any supporting evidence above has a 'caveat' line, status must "
+        "not be 'supported' -- use 'supported_with_risks' unless a stronger "
+        "rule above already applies -- and the caveat must be reflected in "
+        "must_not_say or open_risks, not silently dropped.",
     ]
     return "\n".join(parts)
 
@@ -294,7 +344,7 @@ def validate_claim_summary(summary: ClaimSummary, request: ClaimSummaryRequest) 
     # at least has a dedicated status value pulling attention to it.
     has_negative_finding = bool(request.negative_findings)
     if has_negative_finding:
-        negative_hashes = {p.payload_hash for p in request.negative_findings}
+        negative_hashes = {item.payload.payload_hash for item in request.negative_findings}
         if not negative_hashes & set(summary.citations):
             problems.append(
                 "request has a negative finding (checked_not_supported); at "
@@ -314,6 +364,30 @@ def validate_claim_summary(summary: ClaimSummary, request: ClaimSummaryRequest) 
         problems.append(
             "request has a contradiction, unresolved conflict, or negative "
             "finding; must_not_say cannot be empty"
+        )
+
+    # claim_link_caveat rule: a caveat on the evidence-to-claim link itself
+    # (e.g. "candidate link, excerpt-level review only") is a real risk
+    # signal about confidence in the *link*, not the payload's content --
+    # see EvidenceItem's docstring. Two checks, deliberately separate from
+    # the contradiction/negative-finding/conflict checks above (a caveat
+    # can exist with none of those also being true, and vice versa):
+    # status must not be 'supported' while a caveat is present, and the
+    # caveat must be reflected somewhere the model actually says something
+    # (must_not_say or open_risks -- either counts, unlike the stricter
+    # must_not_say-only rule above), not silently dropped just because no
+    # contradiction/conflict/negative-finding also happens to apply.
+    has_caveat = any(item.claim_link_caveat.strip() for item in request.supporting)
+    if has_caveat and summary.status == "supported":
+        problems.append(
+            "supporting evidence has a claim_link_caveat; status cannot be "
+            "'supported' (it may be 'supported_with_risks', or something "
+            "stronger if another rule above also applies)"
+        )
+    if has_caveat and not summary.open_risks and not summary.must_not_say:
+        problems.append(
+            "supporting evidence has a claim_link_caveat; it must be "
+            "reflected in open_risks or must_not_say, not silently dropped"
         )
 
     # Citations may only point at evidence that was actually checked. See

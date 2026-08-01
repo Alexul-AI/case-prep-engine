@@ -5,7 +5,7 @@ what the product is/for whom/scope — this file is only "where things
 stand and what's next"). Mirrors the `docs/product/ROADMAP.md` convention
 used in the author's other repos — read this before proposing new work.
 
-## Architecture built so far (2026-07-30 → 2026-08-01, 149 tests)
+## Architecture built so far (2026-07-30 → 2026-08-01, 162 tests)
 
 Each stage below was built directly on the previous one, in order, and
 each one deliberately stayed *simpler* than the temptation to skip ahead
@@ -103,6 +103,37 @@ each one deliberately stayed *simpler* than the temptation to skip ahead
     of invisible. New regression tests lock in both the fix (two distinct
     quotes never collapse) and the pre-existing behavior it must not break
     (a same-quote re-verification still competes as one group).
+12. **`claim_link_caveat` — prompt-visible evidence-link risk metadata**
+    (2026-08-01) — direct response to a real manual-LLM-bridge finding: the
+    first Track B evidence-linking pass (item 11's follow-up, done locally
+    against `data/`) added a "candidate link" caveat as a plain
+    `EvidencePayload.source_note` — but `source_note` is deliberately
+    private and never reaches a prompt (see `render_payload_block`'s
+    docstring), so four different real models (tested via the manual
+    bridge) all summarized that candidate-link claim exactly as confidently
+    as a fully-reviewed one, correctly reading its evidence but with no way
+    to know the *link* itself was weaker than usual. New, separate field:
+    `EvidenceRow.claim_link_caveat` — unlike `source_note` (operational,
+    about the document), this is *about the payload-to-claim link* and is
+    deliberately rendered into the prompt (a `caveat:` line under the
+    relevant supporting-evidence block). `claim_summary.py` gained
+    `EvidenceItem` (payload + `claim_link_caveat`) as what
+    `ClaimSummaryRequest.supporting`/`negative_findings`/`contradictions`
+    now actually carry, instead of bare `EvidencePayload` tuples.
+    `validate_claim_summary()` gained two rules mirroring the existing
+    contradiction/conflict rules: a caveat on any supporting evidence
+    forbids `status='supported'` (use `supported_with_risks`, or something
+    stronger if another rule also applies), and the caveat must be
+    reflected in `must_not_say` or `open_risks`, not silently dropped.
+    Behavior-preserving for every row with no caveat (the overwhelming
+    majority) — verified against the real register and
+    `examples/demo_register.csv`, both unaffected; the real B01/B03 rows
+    don't have `claim_link_caveat` set yet (still on `source_note`),
+    a deliberate follow-up decision left to the author, not done
+    automatically by this PR. All 6 existing golden prompt fixtures
+    regenerated (shared "Status meaning"/hard-rules text changed for every
+    prompt, not only caveat-carrying ones) plus one new fixture
+    (`claim_link_caveat.txt`) for the new scenario.
 
 ## Design rules that have held since day one
 
