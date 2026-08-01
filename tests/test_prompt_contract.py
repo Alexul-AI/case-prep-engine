@@ -13,10 +13,12 @@ from helpers import make_row
 GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
 
 
-def request_for(rows, claim_id="C-GOLDEN"):
+def request_for(rows, claim_id="C-GOLDEN", case_id="personal", track_id="test_track"):
     from case_prep_engine.claim_summary import build_claim_summary_request
 
-    return build_claim_summary_request(build_evidence_matrix(rows)[claim_id])
+    return build_claim_summary_request(
+        build_evidence_matrix(rows)[(case_id, track_id, claim_id)]
+    )
 
 
 def assert_matches_golden(test_case, prompt: str, golden_name: str):
@@ -135,10 +137,8 @@ class RenderPayloadBlockPrivacyGuardTests(unittest.TestCase):
 
     def test_render_payload_block_contains_only_hash_source_ref_and_text(self):
         payload = build_evidence_payload(
-            payload_type="quote",
             hebrew_verbatim="דוגמת טקסט לבדיקה",
             source_ref="Drive fileId privacy-check-ref",
-            claim_id="C-GOLDEN",
             verification_method="drive_fetch",
             verified_by_actor="tester",
             verified_utc="2026-07-29",

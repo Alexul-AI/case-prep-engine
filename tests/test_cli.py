@@ -118,7 +118,7 @@ class CliSummarizeClaimTests(unittest.TestCase):
              "--register", str(self.register), "--fake"]
         )
         self.assertNotEqual(exit_code, 0)
-        self.assertIn("not found", stderr)
+        self.assertIn("no claim", stderr)
         self.assertEqual(stdout, "")
 
     def test_register_not_found_is_a_clear_error(self):
@@ -225,6 +225,26 @@ class CliSummarizeClaimTests(unittest.TestCase):
         self.assertNotIn("MUST NOT LEAK", stderr)
         self.assertNotIn("MUST NOT LEAK", stdout)
 
+    def test_list_claims_shows_case_and_track_columns(self):
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--register", str(self.register), "--list-claims"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("case_id", stdout)
+        self.assertIn("track_id", stdout)
+        self.assertIn("personal", stdout)
+        self.assertIn("takana9_ptsd_ms", stdout)  # DEFAULT_TRACK_ID, register has no track_id column
+
+    def test_same_claim_id_in_a_different_case_is_not_found_by_default(self):
+        # C-SUP exists under case_id="personal" (the default). Asking for
+        # it under a different case must not silently find the wrong one.
+        exit_code, stdout, stderr = run_cli(
+            ["summarize-claim", "--claim-id", "C-SUP", "--case-id", "brother_case",
+             "--register", str(self.register), "--fake"]
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("no claim", stderr)
+
     def test_output_file_is_written_as_utf8(self):
         out_path = Path(self._tmp.name) / "out.json"
         exit_code, stdout, stderr = run_cli(
@@ -282,7 +302,7 @@ class ManualBridgeTests(unittest.TestCase):
              "--request-output", str(self.request_path)]
         )
         self.assertNotEqual(exit_code, 0)
-        self.assertIn("not found", stderr)
+        self.assertIn("no claim", stderr)
 
     def test_validate_summary_accepts_a_correct_hand_written_reply(self):
         self._export()

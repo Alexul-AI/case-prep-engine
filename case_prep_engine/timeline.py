@@ -111,7 +111,7 @@ def infer_event_type(document: str) -> str:
 
 @dataclass(frozen=True)
 class TimelineEvent:
-    """One resolved (document, claim) entry, placed in time.
+    """One resolved (case, track, document, claim) entry, placed in time.
 
     event_date/date_precision/date_source describe *how confidently* this
     event is placed in time -- event_date being non-empty is not itself a
@@ -129,6 +129,8 @@ class TimelineEvent:
     event_type: str  # service_event | diagnosis | committee | expert_opinion | treatment | functional_change | unknown
     document: str
     source_ref: str
+    case_id: str
+    track_id: str
     claim_id: str
     payload_hash: str
     evidence_status: str  # verified_events | date_unresolved | conflicts | blocked_or_unverified
@@ -142,10 +144,11 @@ def build_timeline(rows: Iterable[EvidenceRow]) -> tuple[TimelineEvent, ...]:
     answers "what happened when" -- two different groupings over the same
     resolve_current_state() output, neither derived from the other.
 
-    One TimelineEvent per resolved (document, claim_id) entry -- a
-    document supporting two claims (e.g. Greenhouse backing both C14 and
-    C15) produces two events, same date, different claim_id, matching
-    EvidenceRow's own atomicity.
+    One TimelineEvent per resolved (case, track, document, claim_id) entry
+    -- a document supporting two claims (e.g. Greenhouse backing both C14
+    and C15) produces two events, same date, different claim_id, matching
+    EvidenceRow's own atomicity. The same claim_id in a different case or
+    track produces its own separate event too, never merged.
 
     evidence_status bucketing precedence (checked in this order):
     1. conflict -> "conflicts", regardless of date.
@@ -162,7 +165,7 @@ def build_timeline(rows: Iterable[EvidenceRow]) -> tuple[TimelineEvent, ...]:
     resolved = resolve_current_state(rows)
 
     events: list[TimelineEvent] = []
-    for (_, claim_id), entry in resolved.items():
+    for (case_id, track_id, _document_identity, claim_id), entry in resolved.items():
         row = entry.row
         document = row.document
         event_date, date_precision = extract_date_from_document_title(document)
@@ -185,6 +188,8 @@ def build_timeline(rows: Iterable[EvidenceRow]) -> tuple[TimelineEvent, ...]:
                 event_type=infer_event_type(document),
                 document=document,
                 source_ref=row.payload.source_ref,
+                case_id=case_id,
+                track_id=track_id,
                 claim_id=claim_id,
                 payload_hash="" if entry.conflict else row.payload.payload_hash,
                 evidence_status=evidence_status,

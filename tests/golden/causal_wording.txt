@@ -1,7 +1,7 @@
 Claim: C-GOLDEN
 
 Supporting evidence:
-  - hash=ee4a3e030f59aec974020ef7b396504b497cb5612c78d9603c479f0dd418ed16 source_ref=Drive fileId golden0000000000000causal
+  - hash=4c8b5b4a72c166e859e8ec0eccbb47ecf3aba36e344755c593db972e1feb67de source_ref=Drive fileId golden0000000000000causal
     text: קיים קשר סיבתי ישיר בין הפגיעה בשירות לבין החמרת המחלה
 
 Negative findings (checked, not supported): (none)

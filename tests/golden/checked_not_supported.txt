@@ -3,7 +3,7 @@ Claim: C-GOLDEN
 Supporting evidence: (none)
 
 Negative findings (checked, not supported):
-  - hash=31b91d3100244914c0f79c843bd48b00aee673b6343022ff5e52e64ff2a78b97 source_ref=Drive fileId golden0000000000negativefind
+  - hash=aaf2b40734e63ab948e3a931bd85ed42bd46e85306f0ad52d3e3d1ec4bf1ff8b source_ref=Drive fileId golden0000000000negativefind
     text: הועדה בדקה ולא מצאה תימוך לטענה
 
 Contradictions: (none)

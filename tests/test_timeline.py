@@ -142,6 +142,22 @@ class BuildTimelineTests(unittest.TestCase):
             ["Early (01.01.2020)", "Late (01.01.2026)", "Undated event"],
         )
 
+    def test_event_carries_its_case_and_track(self):
+        row = make_row(
+            case_id="brother_case", track_id="ptsd_worsening",
+            document="Doc (01.01.2026)", claim_id="C01",
+        )
+        events = build_timeline([row])
+        self.assertEqual(events[0].case_id, "brother_case")
+        self.assertEqual(events[0].track_id, "ptsd_worsening")
+
+    def test_same_claim_id_in_different_cases_produces_two_events(self):
+        alex = make_row(case_id="alex_personal", document="Doc (01.01.2026)", claim_id="C01", source_ref="d1")
+        brother = make_row(case_id="brother_case", document="Doc (01.01.2026)", claim_id="C01", source_ref="d1")
+        events = build_timeline([alex, brother])
+        self.assertEqual(len(events), 2)
+        self.assertEqual({e.case_id for e in events}, {"alex_personal", "brother_case"})
+
 
 @unittest.skipUnless(
     REAL_REGISTER_CSV.exists(),
@@ -167,6 +183,8 @@ class RealRegisterTimelineTests(unittest.TestCase):
         self.assertEqual(len(gour_events), 1)
         self.assertEqual(gour_events[0].event_date, "2025-06-22")
         self.assertEqual(gour_events[0].evidence_status, "verified_events")
+        self.assertEqual(gour_events[0].case_id, "personal")
+        self.assertEqual(gour_events[0].track_id, "takana9_ptsd_ms")
 
         # C01 (Rambam + IDF report, needs_ocr/blocked) must be
         # blocked_or_unverified, never verified_events, even though both

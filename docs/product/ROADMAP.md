@@ -1,32 +1,11 @@
-# Case Prep Engine — PRD & Roadmap
+# Case Prep Engine — Roadmap
 
-Added 2026-08-01. Mirrors the product-doc convention used in the author's
-other repos (a single `docs/product/ROADMAP.md` as the up-to-date plan of
-record) — read this before proposing new work or discussing scope.
+Added 2026-08-01, split from PRD 2026-08-01 (see `docs/product/PRD.md` for
+what the product is/for whom/scope — this file is only "where things
+stand and what's next"). Mirrors the `docs/product/ROADMAP.md` convention
+used in the author's other repos — read this before proposing new work.
 
-## What this is
-
-A preparation and organization assistant for נכי צה"ל disability
-recognition/appeal/תקנה 9 work: read and structure medical/committee
-documents, track what's actually verified vs. still assumed, and build a
-readiness picture before a ועדה רפואית. Not legal or medical advice —
-every claim it can generate is gated behind explicit evidence, and it
-refuses to state anything it can't back with a citation.
-
-## Who it's for
-
-**Phase 1 (current): one person, their own case.** The author, running it
-against their own documents.
-
-**Phase 2 (planned, not started): friends and family who ask to try it.**
-Explicitly deferred until Phase 1 is solid — see "Not yet done" below.
-Already decided (2026-07-30): each person runs their own local instance
-against their own Google Drive; there is no shared backend, and none is
-planned. What "runs their own instance" means in practice — a Claude Code
-session per person vs. a real packaged, installable app — is still an
-open question, revisit when Phase 1 is actually ready to hand off.
-
-## Architecture built so far (2026-07-30 → 2026-07-31, 131 tests)
+## Architecture built so far (2026-07-30 → 2026-08-01, 142 tests)
 
 Each stage below was built directly on the previous one, in order, and
 each one deliberately stayed *simpler* than the temptation to skip ahead
@@ -35,7 +14,11 @@ each one deliberately stayed *simpler* than the temptation to skip ahead
 1. **`hebrew_text_quality.py`** — detects and fixes line-reversed Hebrew
    text extraction (a real, recurring OCR/Drive-extraction failure mode).
 2. **`evidence_store.py`** — the typed, append-only evidence log.
-   `EvidenceRow`/`EvidencePayload` are atomic per (document, claim);
+   Atomic at (case_id, track_id, source_ref, claim_id); `EvidencePayload`
+   is pure content (what a source says, independent of any claim) and
+   `EvidenceRow` is the case/track-scoped link saying what that content is
+   being used to support — the same payload can back a claim in one track
+   and be irrelevant to another without being duplicated.
    `resolve_current_state()` picks the current belief per claim from
    history and **flags an unresolved conflict instead of guessing** when
    provenance doesn't clearly support one answer over another;
@@ -43,10 +26,11 @@ each one deliberately stayed *simpler* than the temptation to skip ahead
    as document identity (a real bug this caught: two different documents
    silently merged into one because both had the same placeholder-ish
    `source_ref`).
-3. **`evidence_matrix.py`** — groups resolved evidence by claim into
-   supporting / contradicting / negative-finding / unresolved / conflict
-   buckets. Purely mechanical, no narrative, no verdict — deliberately
-   stops short of writing anything that reads like a conclusion.
+3. **`evidence_matrix.py`** — groups resolved evidence by (case, track,
+   claim) into supporting / contradicting / negative-finding / unresolved
+   / conflict buckets. Purely mechanical, no narrative, no verdict —
+   deliberately stops short of writing anything that reads like a
+   conclusion.
 4. **`timeline.py`** — a *separate* date-based projection over the same
    evidence, not built on top of the matrix (a chronological narrative
    invites causal storytelling — "X happened, then Y, therefore..." — in
@@ -66,15 +50,29 @@ each one deliberately stayed *simpler* than the temptation to skip ahead
 7. **`tests/golden/*.txt`** — exact-text prompt-contract fixtures for
    support / contradiction / negative-finding / conflict / causal-wording
    / Hebrew-abbreviation-safety scenarios.
-8. **`cli.py`** — `summarize-claim` (`--fake`, `--list-claims`, `--strict`,
-   `--show-prompt`, `--output`), plus a manual bridge to any real model a
-   person already has access to: `export-claim-prompt` (freezes the exact
-   request to a file) and `validate-summary` (checks a hand-pasted reply
-   against that frozen request, not a live re-derivation that could have
-   drifted).
+8. **`cli.py`** — `summarize-claim` (`--fake`, `--case-id`/`--track-id`,
+   `--list-claims`, `--strict`, `--show-prompt`, `--output`), plus a
+   manual bridge to any real model a person already has access to:
+   `export-claim-prompt` (freezes the exact request to a file) and
+   `validate-summary` (checks a hand-pasted reply against that frozen
+   request, not a live re-derivation that could have drifted).
 9. **`examples/demo_register.csv`** — synthetic, safe-to-publish register
    backing the README quickstart, so anyone can try the tool with zero
    setup and zero personal data.
+10. **Case/track scoping** (2026-08-01) — `case_id`/`track_id` added
+    ahead of `claim_id` throughout the whole pipeline, not only in the
+    register: the same claim_id in two different cases (Phase 2: two
+    different people) or two different tracks of the same case (today's
+    real need, not hypothetical — see PRD) never collides. Backward
+    compatible: a register with no case_id/track_id column defaults to
+    `personal`/`takana9_ptsd_ms` (`DEFAULT_CASE_ID`/`DEFAULT_TRACK_ID` in
+    `evidence_store.py`), never to an empty scope. Same PR moved
+    `claim_id`/`payload_type` off `EvidencePayload` onto `EvidenceRow` and
+    dropped `claim_id` from `payload_hash`'s inputs — content identity
+    (what a source says) and claim identity (what it's being used to
+    support) are different things, so the same Greenhouse-style quote
+    backing two different tracks' claims is one piece of evidence, not
+    two hashed differently.
 
 ## Design rules that have held since day one
 
@@ -92,21 +90,21 @@ each one deliberately stayed *simpler* than the temptation to skip ahead
   this file are generic and public; anything containing a real document's
   actual text lives only in the gitignored `data/`, local to whoever runs
   it — including for a future Phase 2 user.
+- **Content identity and claim identity are different things.** A source's
+  own hash/content lives on `EvidencePayload`; which claim (within which
+  case/track) it's being used to support is a property of the *link*
+  (`EvidenceRow`), not the content itself.
 
 ## Next up
 
-**Multi-track support** (near-term, blocks nothing else but is now a real
-gap): the schema and CLI currently treat all claims as one flat
-namespace. In practice, one person's case can span several genuinely
-parallel, only-partially-overlapping matters at once — not just one
-תקנה 9 causal argument. The register/CLI need an explicit notion of which
-track a claim belongs to (`--track` filtering in `list-claims` and
-`summarize-claim`, a `track` grouping in the evidence matrix), and a way
-for one piece of evidence to serve more than one track's claims without
-duplicating it. Concrete requirements exist now (see the author's own
-local case), not hypothetical — this is worth doing before Phase 2, not
-after, since one person with several tracks is already today's real use
-case, not a future one.
+Re-classifying which existing evidence also applies to the newer tracks
+(e.g. the Greenhouse psychiatric opinion likely bears on both the
+`takana9_ptsd_ms` causal claim it already backs and a `ptsd_worsening`
+claim it hasn't been linked to yet) is a **substance decision about the
+case**, not an engineering one — deliberately left to the author to do by
+hand (add a new register row with the existing source_ref, a new
+claim_id, and the new track_id), not silently inferred during any
+migration.
 
 ## Deferred (planned, not started, in this order)
 
@@ -132,3 +130,9 @@ case, not a future one.
   separate decision from what a shipped tool uses for real medical data.
 - Any shared backend or cross-user data store. Every person's evidence
   stays local to them, always.
+- Inventing a `Claim`/`EvidenceLink` entity separate from `EvidenceRow`.
+  Considered and rejected in favor of moving `claim_id`/`payload_type`
+  onto `EvidenceRow` directly (see "Architecture built so far", item 10)
+  — `EvidenceRow` already *is* the case/track/claim-scoped link once those
+  fields live there; a rename/new class would have touched the same files
+  for no behavior change.

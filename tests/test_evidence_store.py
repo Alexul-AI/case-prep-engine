@@ -23,14 +23,18 @@ REAL_REGISTER_CSV = (
     / "ocr_gap_register_v6_hebrew_payload.csv"
 )
 
+DEFAULT_KEY_PREFIX = ("personal", "test_track")  # matches helpers.make_row's defaults
+
+
+def key(source_ref_or_document: str, claim_id: str) -> tuple[str, str, str, str]:
+    return (*DEFAULT_KEY_PREFIX, source_ref_or_document, claim_id)
+
 
 class EvidencePayloadTests(unittest.TestCase):
     def test_build_evidence_payload_derives_precision_and_hash(self):
         payload = build_evidence_payload(
-            payload_type="quote",
             hebrew_verbatim="טקסט לדוגמה",
             source_ref="drive-1",
-            claim_id="C08",
             verification_method="drive_fetch",
             verified_by_actor="tester",
             verified_utc="2026-07-29",
@@ -38,40 +42,50 @@ class EvidencePayloadTests(unittest.TestCase):
         self.assertEqual(payload.verified_precision, "date")
         self.assertEqual(
             payload.payload_hash,
-            compute_payload_hash("C08", "drive-1", "quote", "טקסט לדוגמה"),
+            compute_payload_hash("drive-1", "טקסט לדוגמה"),
         )
 
     def test_identical_core_content_hashes_the_same_regardless_of_provenance(self):
         a = build_evidence_payload(
-            payload_type="quote", hebrew_verbatim="טקסט", source_ref="drive-1",
-            claim_id="C08", verification_method="drive_fetch",
+            hebrew_verbatim="טקסט", source_ref="drive-1",
+            verification_method="drive_fetch",
             verified_by_actor="agent-a", verified_utc="2026-07-29",
         )
         b = build_evidence_payload(
-            payload_type="quote", hebrew_verbatim="טקסט", source_ref="drive-1",
-            claim_id="C08", verification_method="manual_read",
+            hebrew_verbatim="טקסט", source_ref="drive-1",
+            verification_method="manual_read",
             verified_by_actor="agent-b", verified_utc="2026-08-01T10:00:00+00:00",
         )
         self.assertEqual(a.payload_hash, b.payload_hash)
 
+    def test_same_content_hashes_the_same_regardless_of_claim(self):
+        # The whole point of moving claim_id off the payload: the same
+        # Greenhouse-style quote backing two different claims is still one
+        # piece of evidence, not two.
+        a = build_evidence_payload(
+            hebrew_verbatim="טקסט", source_ref="drive-1",
+            verification_method="x", verified_by_actor="x", verified_utc="2026-07-29",
+        )
+        row_c14 = make_row(claim_id="C14", hebrew_verbatim="טקסט", source_ref="drive-1")
+        row_c15 = make_row(claim_id="C15", hebrew_verbatim="טקסט", source_ref="drive-1")
+        self.assertEqual(row_c14.payload.payload_hash, row_c15.payload.payload_hash)
+        self.assertEqual(row_c14.payload.payload_hash, a.payload_hash)
+
     def test_different_verbatim_text_hashes_differently(self):
         a = build_evidence_payload(
-            payload_type="quote", hebrew_verbatim="טקסט א", source_ref="drive-1",
-            claim_id="C08", verification_method="x", verified_by_actor="x",
-            verified_utc="2026-07-29",
+            hebrew_verbatim="טקסט א", source_ref="drive-1",
+            verification_method="x", verified_by_actor="x", verified_utc="2026-07-29",
         )
         b = build_evidence_payload(
-            payload_type="quote", hebrew_verbatim="טקסט ב", source_ref="drive-1",
-            claim_id="C08", verification_method="x", verified_by_actor="x",
-            verified_utc="2026-07-29",
+            hebrew_verbatim="טקסט ב", source_ref="drive-1",
+            verification_method="x", verified_by_actor="x", verified_utc="2026-07-29",
         )
         self.assertNotEqual(a.payload_hash, b.payload_hash)
 
     def test_tampered_hash_is_detected_by_validate_row(self):
         payload = build_evidence_payload(
-            payload_type="quote", hebrew_verbatim="טקסט מקורי", source_ref="drive-1",
-            claim_id="C08", verification_method="x", verified_by_actor="x",
-            verified_utc="2026-07-29",
+            hebrew_verbatim="טקסט מקורי", source_ref="drive-1",
+            verification_method="x", verified_by_actor="x", verified_utc="2026-07-29",
         )
         # Simulate the hebrew_verbatim being edited after the hash was computed.
         tampered = EvidencePayload(**{**payload.__dict__, "hebrew_verbatim": "טקסט שונה"})
@@ -181,6 +195,15 @@ class ValidateRowTests(unittest.TestCase):
         )
         self.assertFalse(any("doesn't look like" in p for p in problems))
 
+    # --- regression: case/track/claim scoping must not be silently empty ---
+    def test_empty_case_id_is_flagged(self):
+        problems = validate_row(make_row(case_id=""))
+        self.assertTrue(any("case_id" in p for p in problems))
+
+    def test_empty_track_id_is_flagged(self):
+        problems = validate_row(make_row(track_id=""))
+        self.assertTrue(any("track_id" in p for p in problems))
+
 
 class LooksLikeStableIdentifierTests(unittest.TestCase):
     def test_drive_fileid_prefixed_form_is_an_identifier(self):
@@ -230,6 +253,9 @@ class EvidenceStoreRoundtripTests(unittest.TestCase):
             loaded = store.read_all()
             self.assertEqual(len(loaded), 1)
             self.assertEqual(loaded[0].document, row.document)
+            self.assertEqual(loaded[0].case_id, row.case_id)
+            self.assertEqual(loaded[0].track_id, row.track_id)
+            self.assertEqual(loaded[0].claim_id, row.claim_id)
             self.assertEqual(
                 loaded[0].payload.hebrew_verbatim, row.payload.hebrew_verbatim
             )
@@ -253,7 +279,7 @@ class ResolveCurrentStateTests(unittest.TestCase):
     def test_single_row_is_current_no_conflict(self):
         row = make_row(source_ref="doc-1")
         resolved = resolve_current_state([row])
-        entry = resolved[("doc-1", "C99")]
+        entry = resolved[key("doc-1", "C99")]
         self.assertEqual(entry.row, row)
         self.assertFalse(entry.conflict)
         self.assertTrue(entry.has_verified_timestamp)
@@ -267,14 +293,14 @@ class ResolveCurrentStateTests(unittest.TestCase):
         )
         newer = make_row(source_ref="doc-1", verified_utc="2026-06-01T00:00:00+00:00")
         resolved = resolve_current_state([older, newer])
-        self.assertEqual(resolved[("doc-1", "C99")].row, newer)
-        self.assertFalse(resolved[("doc-1", "C99")].conflict)
+        self.assertEqual(resolved[key("doc-1", "C99")].row, newer)
+        self.assertFalse(resolved[key("doc-1", "C99")].conflict)
 
     def test_no_timestamps_at_all_is_a_conflict(self):
         a = make_row(source_ref="doc-1", verified_utc="unknown")
         b = make_row(source_ref="doc-1", verified_utc="after-v4-snapshot")
         resolved = resolve_current_state([a, b])
-        self.assertTrue(resolved[("doc-1", "C99")].conflict)
+        self.assertTrue(resolved[key("doc-1", "C99")].conflict)
 
     def test_tied_newest_timestamps_is_a_conflict(self):
         a = make_row(
@@ -288,7 +314,7 @@ class ResolveCurrentStateTests(unittest.TestCase):
             verified_utc="2026-06-01T00:00:00+00:00",
         )
         resolved = resolve_current_state([a, b])
-        self.assertTrue(resolved[("doc-1", "C99")].conflict)
+        self.assertTrue(resolved[key("doc-1", "C99")].conflict)
 
     def test_groups_by_source_ref_not_document_title(self):
         a = make_row(source_ref="drive-id-123", document="Old Title")
@@ -320,10 +346,10 @@ class ResolveCurrentStateTests(unittest.TestCase):
         )
         resolved = resolve_current_state([a, b])
         self.assertEqual(len(resolved), 2)
-        self.assertIn(("סיכום אשפוז", "C01"), resolved)
-        self.assertIn(("IDF injury report", "C01"), resolved)
-        self.assertFalse(resolved[("סיכום אשפוז", "C01")].conflict)
-        self.assertFalse(resolved[("IDF injury report", "C01")].conflict)
+        self.assertIn(key("סיכום אשפוז", "C01"), resolved)
+        self.assertIn(key("IDF injury report", "C01"), resolved)
+        self.assertFalse(resolved[key("סיכום אשפוז", "C01")].conflict)
+        self.assertFalse(resolved[key("IDF injury report", "C01")].conflict)
 
     def test_different_claims_on_same_document_do_not_collapse(self):
         c14 = make_row(
@@ -338,10 +364,10 @@ class ResolveCurrentStateTests(unittest.TestCase):
         )
         resolved = resolve_current_state([c14, c15])
         self.assertEqual(len(resolved), 2)
-        self.assertIn(("drive-xyz", "C14"), resolved)
-        self.assertIn(("drive-xyz", "C15"), resolved)
-        self.assertFalse(resolved[("drive-xyz", "C14")].conflict)
-        self.assertFalse(resolved[("drive-xyz", "C15")].conflict)
+        self.assertIn(key("drive-xyz", "C14"), resolved)
+        self.assertIn(key("drive-xyz", "C15"), resolved)
+        self.assertFalse(resolved[key("drive-xyz", "C14")].conflict)
+        self.assertFalse(resolved[key("drive-xyz", "C15")].conflict)
 
     # --- explicit policy check: same-day date-only, different conclusions ---
     def test_same_day_date_only_rows_with_different_conclusions_conflict(self):
@@ -358,11 +384,26 @@ class ResolveCurrentStateTests(unittest.TestCase):
             output_gate="allowed_as_quote",
         )
         resolved = resolve_current_state([first_read, second_read_same_day])
-        entry = resolved[("doc-1", "C99")]
+        entry = resolved[key("doc-1", "C99")]
         self.assertTrue(entry.conflict)
         self.assertEqual(
             {r.payload.verified_precision for r in entry.candidates}, {"date"}
         )
+
+    # --- regression: case/track scoping prevents claim_id collisions ---
+    def test_same_claim_id_in_different_cases_does_not_collide(self):
+        alex = make_row(case_id="alex_personal", source_ref="doc-1", claim_id="C01")
+        brother = make_row(case_id="brother_case", source_ref="doc-1", claim_id="C01")
+        resolved = resolve_current_state([alex, brother])
+        self.assertEqual(len(resolved), 2)
+        self.assertIn(("alex_personal", "test_track", "doc-1", "C01"), resolved)
+        self.assertIn(("brother_case", "test_track", "doc-1", "C01"), resolved)
+
+    def test_same_claim_id_in_different_tracks_does_not_collide(self):
+        a = make_row(track_id="takana9_ptsd_ms", source_ref="doc-1", claim_id="C01")
+        b = make_row(track_id="ptsd_worsening", source_ref="doc-1", claim_id="C01")
+        resolved = resolve_current_state([a, b])
+        self.assertEqual(len(resolved), 2)
 
 
 @unittest.skipUnless(
@@ -385,13 +426,21 @@ class ImportRealRegisterCsvTests(unittest.TestCase):
             self.assertEqual(
                 problems,
                 [],
-                f"{row.document!r}/{row.payload.claim_id!r} failed: {problems}",
+                f"{row.document!r}/{row.claim_id!r} failed: {problems}",
             )
+
+    def test_real_register_defaults_to_personal_case_and_takana9_track(self):
+        # The real register predates case_id/track_id -- confirms the CSV
+        # fallback (not an empty string, which validate_row would reject).
+        rows = import_csv(REAL_REGISTER_CSV)
+        self.assertTrue(rows)
+        self.assertTrue(all(r.case_id == "personal" for r in rows))
+        self.assertTrue(all(r.track_id == "takana9_ptsd_ms" for r in rows))
 
     def test_multi_claim_row_splits_into_separate_rows(self):
         rows = import_csv(REAL_REGISTER_CSV)
         greenhouse_claim_ids = {
-            r.payload.claim_id for r in rows if "גרינהאוז" in r.document
+            r.claim_id for r in rows if "גרינהאוז" in r.document
         }
         self.assertEqual(greenhouse_claim_ids, {"C14", "C15"})
 

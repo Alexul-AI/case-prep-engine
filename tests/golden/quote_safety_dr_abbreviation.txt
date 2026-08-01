@@ -1,7 +1,7 @@
 Claim: C-GOLDEN
 
 Supporting evidence:
-  - hash=db512713af972c302e112fc95251d13b365dae5ab2edd7e9678738cc469c26e7 source_ref=Drive fileId golden0000000000drtitlequote
+  - hash=cbd9e5bbde3e540d60ce6e2040b8d00aa0dc9fb211291bf37039ea46127cf5ca source_ref=Drive fileId golden0000000000drtitlequote
     text: לדעת ד"ר גור, קיימת זיקה סיבתית בהסתברות גבוהה, ראו גם כ"הס 62.20%
 
 Negative findings (checked, not supported): (none)

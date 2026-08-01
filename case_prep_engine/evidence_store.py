@@ -120,6 +120,14 @@ UNVERIFIED_TIMESTAMP_SENTINELS = PLACEHOLDER_TEXT_VALUES | frozenset(
     {"after-v4-snapshot"}
 )
 
+# Defaults applied when a register/import doesn't specify case_id/track_id
+# (i.e. every register that predates multi-case/multi-track support).
+# "personal" matches the only case that existed before this concept did;
+# the track default matches the only track the register was ever scoped to
+# before this change (see docs/product/ROADMAP.md, "Next up" -> "done").
+DEFAULT_CASE_ID = "personal"
+DEFAULT_TRACK_ID = "takana9_ptsd_ms"
+
 _CLAIM_ID_SPLIT_RE = re.compile(r"[;/]")
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
@@ -201,6 +209,13 @@ def infer_payload_type(claim_support_status: str) -> str:
 
     "none" (not an unknown/invalid value) means this row hasn't reached a
     real payload yet -- e.g. metadata_only or not_checked.
+
+    This -- like claim_support_status itself -- is a property of *this
+    row's relationship to its claim*, not of the underlying document, so
+    payload_type lives on EvidenceRow, not on EvidencePayload. The same
+    Hebrew text can be a "quote" supporting one claim and simply absent
+    (payload_type "none", no row at all) for a claim it has nothing to do
+    with.
     """
     return _PAYLOAD_TYPE_BY_CLAIM_SUPPORT.get(claim_support_status, "none")
 
@@ -224,29 +239,28 @@ def _normalize_for_hash(text: str) -> str:
     return unicodedata.normalize("NFC", text.strip())
 
 
-def compute_payload_hash(
-    claim_id: str, source_ref: str, payload_type: str, hebrew_verbatim: str
-) -> str:
-    """Hash of a payload's identity-and-content core.
+def compute_payload_hash(source_ref: str, hebrew_verbatim: str) -> str:
+    """Hash of a payload's content identity: what it says, and where from.
 
-    Deliberately excludes provenance fields (actor, method, timestamp) --
-    two different verification passes that land on the same quote for the
-    same claim should hash identically, so this can eventually support
-    dedup/agreement detection across sessions.
+    Deliberately excludes claim_id/payload_type (those are properties of a
+    *link* to a claim, not of the content -- the same Greenhouse quote can
+    back a תקנה 9 causal claim and a PTSD-worsening claim at once, and it
+    is the same evidence either way, not two different pieces of it) and
+    provenance fields like actor/method/timestamp (so two independent
+    verification passes that land on the same quote hash identically,
+    supporting future dedup/agreement detection).
     """
-    parts = [
-        _normalize_for_hash(claim_id),
-        _normalize_for_hash(source_ref),
-        _normalize_for_hash(payload_type),
-        _normalize_for_hash(hebrew_verbatim),
-    ]
+    parts = [_normalize_for_hash(source_ref), _normalize_for_hash(hebrew_verbatim)]
     normalized = "\x1f".join(parts)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
 class EvidencePayload:
-    """The actual evidentiary content: what was found, where, and how.
+    """The actual evidentiary content: what a source says, where it's from,
+    and how/when that reading was verified. Independent of any claim --
+    see EvidenceRow for the case/track/claim-scoped link that says what
+    this content is being used to support.
 
     This is the center of gravity, not an attachment on EvidenceRow -- the
     Hebrew verbatim text, its source, and its provenance travel together as
@@ -255,10 +269,8 @@ class EvidencePayload:
     in a separate not-yet-built shared store.
     """
 
-    payload_type: str  # quote | paraphrase | negative_finding | contradiction | none
     hebrew_verbatim: str
     source_ref: str
-    claim_id: str
     verification_method: str
     verified_by_actor: str
     verified_utc: str
@@ -275,10 +287,8 @@ class EvidencePayload:
 
 def build_evidence_payload(
     *,
-    payload_type: str,
     hebrew_verbatim: str,
     source_ref: str,
-    claim_id: str,
     verification_method: str,
     verified_by_actor: str,
     verified_utc: str,
@@ -294,65 +304,86 @@ def build_evidence_payload(
     that deliberately want a stale/wrong hash).
     """
     return EvidencePayload(
-        payload_type=payload_type,
         hebrew_verbatim=hebrew_verbatim,
         source_ref=source_ref,
-        claim_id=claim_id,
         verification_method=verification_method,
         verified_by_actor=verified_by_actor,
         verified_utc=verified_utc,
         verified_precision=infer_verified_precision(verified_utc),
         source_location=source_location,
         translation_ru=translation_ru,
-        payload_hash=compute_payload_hash(
-            claim_id, source_ref, payload_type, hebrew_verbatim
-        ),
+        payload_hash=compute_payload_hash(source_ref, hebrew_verbatim),
         source_note=source_note,
     )
 
 
 @dataclass(frozen=True)
 class EvidenceRow:
-    """One claim about one document's read-status, at a point in time.
+    """One claim, within one case and one track, about one document's
+    read-status, at a point in time.
 
-    Atomic at (source_ref, claim_id): a document supporting two different
-    claims (e.g. one expert opinion backing both C14 and C15) is two
-    EvidenceRow records, not one row with both ids in it -- otherwise a
-    later update to one claim silently overwrites the other in
-    resolve_current_state() (see the "claim collapse" bug this fixed).
-    Never mutated in place once written to a store -- see EvidenceStore.
+    The link between a piece of content (payload) and a specific claim.
+    claim_support_status/output_gate/payload_type describe *this row's*
+    relationship to *this* claim -- the same payload can appear in a
+    different EvidenceRow for a different claim (even a different track)
+    with a completely different claim_support_status, because support is a
+    property of the link, not of the document.
+
+    Atomic at (case_id, track_id, source_ref, claim_id): a document
+    supporting two different claims (e.g. one expert opinion backing both
+    C14 and C15) is two EvidenceRow records sharing one EvidencePayload,
+    not one row with both ids in it -- otherwise a later update to one
+    claim silently overwrites the other in resolve_current_state() (see
+    the "claim collapse" bug this fixed). Never mutated in place once
+    written to a store -- see EvidenceStore.
     """
 
     document: str
+    case_id: str
+    track_id: str
+    claim_id: str
     text_quality_status: str
     claim_support_status: str
     output_gate: str
+    payload_type: str  # quote | paraphrase | negative_finding | contradiction | none
     staleness_status: str
     payload: EvidencePayload
+    # Free-text sub-grouping label within a track, e.g. "תקנה 9 — סיבתיות
+    # (decisive)" -- distinct from track_id (a stable machine-readable
+    # slug like "takana9_ptsd_ms"); kept for the human-readable priority
+    # ordering the real register already uses.
     track: str = ""
     priority_in_track: str = ""
     row_written_utc: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
-    def key(self) -> tuple[str, str]:
+    def key(self) -> tuple[str, str, str, str]:
         """Stable identity for grouping rows about "the same claim".
 
-        (document identity, claim_id). Document identity prefers
-        payload.source_ref (a Drive file id or similar) since a title can
-        be re-transliterated or re-punctuated between register versions;
-        falls back to the document title when source_ref is a placeholder
-        like "unknown", or when it doesn't look like a real identifier at
-        all -- a free-text note accidentally used as source_ref (the C01
-        bug: two different documents both got the note "needs_ocr per both
-        parallel passes" as their source_ref, and this identity check
-        treated that as if they were the same document) must not be
-        trusted as identity just because it's non-empty.
+        (case_id, track_id, document identity, claim_id). case_id/track_id
+        are included so the same claim_id used by two different cases (or
+        two different tracks of the same case) never collides -- claim_id
+        alone is only unique *within* a (case, track) pair, by design (see
+        docs/product/ROADMAP.md).
+
+        Document identity prefers payload.source_ref (a Drive file id or
+        similar) since a title can be re-transliterated or re-punctuated
+        between register versions; falls back to the document title when
+        source_ref is a placeholder like "unknown", or when it doesn't
+        look like a real identifier at all -- a free-text note accidentally
+        used as source_ref (the C01 bug: two different documents both got
+        the note "needs_ocr per both parallel passes" as their source_ref,
+        and this identity check treated that as if they were the same
+        document) must not be trusted as identity just because it's
+        non-empty.
         """
         ref = self.payload.source_ref.strip()
         if ref and not _is_placeholder(ref) and looks_like_stable_identifier(ref):
-            return (ref, self.payload.claim_id.strip())
-        return (self.document.strip(), self.payload.claim_id.strip())
+            identity = ref
+        else:
+            identity = self.document.strip()
+        return (self.case_id.strip(), self.track_id.strip(), identity, self.claim_id.strip())
 
 
 def validate_row(row: EvidenceRow) -> list[str]:
@@ -368,14 +399,21 @@ def validate_row(row: EvidenceRow) -> list[str]:
     problems: list[str] = []
     payload = row.payload
 
+    if not row.case_id.strip():
+        problems.append("case_id must not be empty")
+    if not row.track_id.strip():
+        problems.append("track_id must not be empty")
+    if not row.claim_id.strip():
+        problems.append("claim_id must not be empty")
+
     if row.text_quality_status not in TEXT_QUALITY_STATUSES:
         problems.append(f"unknown text_quality_status: {row.text_quality_status!r}")
     if row.claim_support_status not in CLAIM_SUPPORT_STATUSES:
         problems.append(f"unknown claim_support_status: {row.claim_support_status!r}")
     if row.output_gate not in OUTPUT_GATE_STATUSES:
         problems.append(f"unknown output_gate: {row.output_gate!r}")
-    if payload.payload_type not in PAYLOAD_TYPES:
-        problems.append(f"unknown payload_type: {payload.payload_type!r}")
+    if row.payload_type not in PAYLOAD_TYPES:
+        problems.append(f"unknown payload_type: {row.payload_type!r}")
     if payload.verified_precision not in VERIFIED_PRECISIONS:
         problems.append(f"unknown verified_precision: {payload.verified_precision!r}")
 
@@ -439,15 +477,12 @@ def validate_row(row: EvidenceRow) -> list[str]:
             )
 
     if payload.payload_hash:
-        expected_hash = compute_payload_hash(
-            payload.claim_id, payload.source_ref, payload.payload_type,
-            payload.hebrew_verbatim,
-        )
+        expected_hash = compute_payload_hash(payload.source_ref, payload.hebrew_verbatim)
         if payload.payload_hash != expected_hash:
             problems.append(
-                "payload_hash does not match its own claim_id/source_ref/"
-                "payload_type/hebrew_verbatim -- payload was edited after "
-                "the hash was computed, or constructed inconsistently"
+                "payload_hash does not match its own source_ref/hebrew_verbatim "
+                "-- payload was edited after the hash was computed, or "
+                "constructed inconsistently"
             )
 
     return problems
@@ -455,6 +490,8 @@ def validate_row(row: EvidenceRow) -> list[str]:
 
 _CSV_COLUMNS = [
     "document",
+    "case_id",
+    "track_id",
     "source_ref",
     "source_note",
     "related_claims",
@@ -474,13 +511,17 @@ _CSV_COLUMNS = [
 def import_csv(path: str | Path) -> list[EvidenceRow]:
     """Load a v6-style ocr_gap_register CSV into typed EvidenceRow records.
 
-    Backward-compatible with the existing CSV schema -- there is no
-    payload_type/verified_precision/payload_hash column, those are derived
-    from claim_support_status and verified_utc via build_evidence_payload().
+    Backward-compatible with registers from before case_id/track_id
+    existed: a missing or empty case_id/track_id column defaults to
+    DEFAULT_CASE_ID/DEFAULT_TRACK_ID, not to an empty string -- an empty
+    scope would fail validate_row()'s new non-empty check, silently
+    breaking every pre-existing register on upgrade. There is also no
+    payload_type/verified_precision/payload_hash column; those are derived
+    via infer_payload_type()/build_evidence_payload().
 
     A CSV row whose related_claims cell names more than one claim (e.g.
-    "C14; C15") becomes one EvidenceRow per claim id, all other fields
-    shared -- see EvidenceRow's docstring for why.
+    "C14; C15") becomes one EvidenceRow per claim id, sharing one
+    EvidencePayload -- see EvidenceRow's docstring for why.
     """
     rows: list[EvidenceRow] = []
     with open(path, encoding="utf-8-sig", newline="") as handle:
@@ -488,23 +529,27 @@ def import_csv(path: str | Path) -> list[EvidenceRow]:
         for raw in reader:
             values = {name: raw.get(name, "").strip() for name in _CSV_COLUMNS}
             claim_support_status = values["claim_support_status"]
+            case_id = values["case_id"] or DEFAULT_CASE_ID
+            track_id = values["track_id"] or DEFAULT_TRACK_ID
+            payload = build_evidence_payload(
+                hebrew_verbatim=values["evidence_payload_hebrew_verbatim"],
+                source_ref=values["source_ref"],
+                verification_method=values["verification_method"],
+                verified_by_actor=values["verified_by_actor"],
+                verified_utc=values["verified_utc"],
+                source_note=values["source_note"],
+            )
             for claim_id in _split_claim_ids(values["related_claims"]):
-                payload = build_evidence_payload(
-                    payload_type=infer_payload_type(claim_support_status),
-                    hebrew_verbatim=values["evidence_payload_hebrew_verbatim"],
-                    source_ref=values["source_ref"],
-                    claim_id=claim_id,
-                    verification_method=values["verification_method"],
-                    verified_by_actor=values["verified_by_actor"],
-                    verified_utc=values["verified_utc"],
-                    source_note=values["source_note"],
-                )
                 rows.append(
                     EvidenceRow(
                         document=values["document"],
+                        case_id=case_id,
+                        track_id=track_id,
+                        claim_id=claim_id,
                         text_quality_status=values["text_quality_status"],
                         claim_support_status=claim_support_status,
                         output_gate=values["output_gate"],
+                        payload_type=infer_payload_type(claim_support_status),
                         staleness_status=values["staleness_status"],
                         payload=payload,
                         track=values["track"],
@@ -559,13 +604,15 @@ class ResolvedEvidence:
 
 def resolve_current_state(
     rows: Iterable[EvidenceRow],
-) -> dict[tuple[str, str], ResolvedEvidence]:
-    """Compute the current belief per (document, claim_id) from row history.
+) -> dict[tuple[str, str, str, str], ResolvedEvidence]:
+    """Compute the current belief per (case_id, track_id, document, claim_id)
+    from row history.
 
-    Grouping is by EvidenceRow.key(), i.e. (document identity, claim_id) --
-    NOT by document alone, so two different claims about the same document
-    (e.g. C14 and C15 both about one expert opinion) resolve independently
-    instead of one silently overwriting the other.
+    Grouping is by EvidenceRow.key() -- NOT by document alone, so two
+    different claims about the same document (e.g. C14 and C15 both about
+    one expert opinion) resolve independently instead of one silently
+    overwriting the other, and NOT by claim_id alone, so the same claim_id
+    used in two different cases or tracks never collides.
 
     Implements the Conflict Rule from case_prep_status_model_v3_provenance.md:
     prefer the row with the latest parseable verified_utc. If a winner can't
@@ -577,11 +624,11 @@ def resolve_current_state(
     midnight and tie under this same logic -- date precision alone cannot
     order same-day events, so that's a conflict too, not a coin flip.
     """
-    groups: dict[tuple[str, str], list[EvidenceRow]] = {}
+    groups: dict[tuple[str, str, str, str], list[EvidenceRow]] = {}
     for row in rows:
         groups.setdefault(row.key(), []).append(row)
 
-    resolved: dict[tuple[str, str], ResolvedEvidence] = {}
+    resolved: dict[tuple[str, str, str, str], ResolvedEvidence] = {}
     for key, group in groups.items():
         dated = [(parse_verified_utc(r.payload.verified_utc), r) for r in group]
         with_ts = [(ts, r) for ts, r in dated if ts is not None]

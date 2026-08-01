@@ -23,8 +23,10 @@ REAL_REGISTER_CSV = (
 )
 
 
-def request_for(rows, claim_id="C99"):
-    return build_claim_summary_request(build_evidence_matrix(rows)[claim_id])
+def request_for(rows, claim_id="C99", case_id="personal", track_id="test_track"):
+    return build_claim_summary_request(
+        build_evidence_matrix(rows)[(case_id, track_id, claim_id)]
+    )
 
 
 class MockClaimSummaryLLMTests(unittest.TestCase):
@@ -172,7 +174,7 @@ class JsonOnlyClaimSummaryLLMTests(unittest.TestCase):
 class RealRegisterLLMAdapterTests(unittest.TestCase):
     def test_json_only_llm_round_trip_against_real_c08_request(self):
         rows = import_csv(REAL_REGISTER_CSV)
-        request = request_for(rows, "C08")
+        request = request_for(rows, "C08", track_id="takana9_ptsd_ms")
         gour_hash = request.supporting[0].payload_hash
 
         def fake_completion(prompt: str) -> str:

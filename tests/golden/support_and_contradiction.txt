@@ -1,13 +1,13 @@
 Claim: C-GOLDEN
 
 Supporting evidence:
-  - hash=94cc95c6f2ec558d6bde2cde8893ad516f5b2c1a78dcaca385e9de97a8c65bc1 source_ref=Drive fileId golden0000000000000support
+  - hash=21f77b1acc71e8108756556b338f81901a238c4473d87f42c41ee66acaebb92b source_ref=Drive fileId golden0000000000000support
     text: המטופל דיווח על כאבים בגב התחתון וקושי בהליכה
 
 Negative findings (checked, not supported): (none)
 
 Contradictions:
-  - hash=0d9efb5c7f3ff8e0c9ba701b1fd91e760fbd1e15146c4aa7d492ee6aecc3664e source_ref=Drive fileId golden0000000000000contra
+  - hash=f5e57ffe1288b84b1753f92bf6649d2b1591ceafb55bf94a3a50658a3407bd97 source_ref=Drive fileId golden0000000000000contra
     text: הבדיקה שוללת קשר בין האירועים
 
 Unresolved conflict on this claim: False

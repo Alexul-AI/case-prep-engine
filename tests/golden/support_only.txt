@@ -1,7 +1,7 @@
 Claim: C-GOLDEN
 
 Supporting evidence:
-  - hash=94cc95c6f2ec558d6bde2cde8893ad516f5b2c1a78dcaca385e9de97a8c65bc1 source_ref=Drive fileId golden0000000000000support
+  - hash=21f77b1acc71e8108756556b338f81901a238c4473d87f42c41ee66acaebb92b source_ref=Drive fileId golden0000000000000support
     text: המטופל דיווח על כאבים בגב התחתון וקושי בהליכה
 
 Negative findings (checked, not supported): (none)

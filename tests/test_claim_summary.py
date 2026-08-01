@@ -18,12 +18,12 @@ REAL_REGISTER_CSV = (
 )
 
 
-def entry_for(rows, claim_id="C99"):
-    return build_evidence_matrix(rows)[claim_id]
+def entry_for(rows, claim_id="C99", case_id="personal", track_id="test_track"):
+    return build_evidence_matrix(rows)[(case_id, track_id, claim_id)]
 
 
-def request_for(rows, claim_id="C99"):
-    return build_claim_summary_request(entry_for(rows, claim_id))
+def request_for(rows, claim_id="C99", case_id="personal", track_id="test_track"):
+    return build_claim_summary_request(entry_for(rows, claim_id, case_id, track_id))
 
 
 class SupportedCaseTests(unittest.TestCase):
@@ -277,7 +277,7 @@ class BuildClaimSummaryPromptTests(unittest.TestCase):
 class RealRegisterClaimSummaryTests(unittest.TestCase):
     def test_real_gour_quote_validates_against_real_request(self):
         rows = import_csv(REAL_REGISTER_CSV)
-        request = request_for(rows, "C08")
+        request = request_for(rows, "C08", track_id="takana9_ptsd_ms")
         gour_hash = request.supporting[0].payload_hash
 
         summary = ClaimSummary(

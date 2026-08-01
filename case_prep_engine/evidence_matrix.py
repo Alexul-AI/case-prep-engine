@@ -13,10 +13,15 @@ _SUPPORTING_GATES = frozenset({"allowed_as_quote", "allowed_as_synthesis"})
 _NEGATIVE_FINDING_GATES = frozenset({"allowed_as_negative_finding"})
 _CONTRADICTION_GATES = frozenset({"allowed_as_contradiction"})
 
+# (case_id, track_id, claim_id) -- a claim is only unique within one case's
+# one track; the same claim_id in a different case or track is unrelated.
+ClaimKey = tuple[str, str, str]
+
 
 @dataclass(frozen=True)
 class ClaimMatrixEntry:
-    """The mechanical, generation-safe evidence picture for one claim.
+    """The mechanical, generation-safe evidence picture for one claim,
+    scoped to one case and one track.
 
     Deliberately structure, not prose: bucketing resolved evidence into
     supporting / negative_findings / contradictions / unresolved /
@@ -28,6 +33,8 @@ class ClaimMatrixEntry:
     promote a weak claim past what its own gates already allow.
     """
 
+    case_id: str
+    track_id: str
     claim_id: str
     supporting: tuple[ResolvedEvidence, ...]
     negative_findings: tuple[ResolvedEvidence, ...]
@@ -52,21 +59,26 @@ class ClaimMatrixEntry:
         return bool(self.conflicts)
 
 
-def build_evidence_matrix(rows: Iterable[EvidenceRow]) -> dict[str, ClaimMatrixEntry]:
-    """Group resolved evidence by claim_id across all of its source documents.
+def build_evidence_matrix(rows: Iterable[EvidenceRow]) -> dict[ClaimKey, ClaimMatrixEntry]:
+    """Group resolved evidence by (case_id, track_id, claim_id) across all
+    of a claim's source documents.
 
     Reuses resolve_current_state() rather than re-deriving "current" per
     document -- a claim can be evidenced by more than one document (e.g. a
     real committee transcript and a formal protocol both bearing on the
     same claim), so this is a second grouping pass over
-    resolve_current_state's own output, by the claim_id half of its
-    (document, claim_id) key.
+    resolve_current_state's own output, by the (case_id, track_id,
+    claim_id) part of its key (dropping the document-identity part).
+    Keying by claim_id alone would let the same claim_id in two different
+    cases or tracks silently merge -- exactly the collision this scoping
+    exists to prevent.
 
-    A conflicted (document, claim_id) entry always lands in `conflicts`,
-    never in supporting/negative_findings/contradictions -- even though
-    ResolvedEvidence still carries *some* row for a conflicted group (see
-    resolve_current_state's docstring), that row was not responsibly
-    chosen as "current" and must not be silently counted as if it were.
+    A conflicted (case, track, document, claim) entry always lands in
+    `conflicts`, never in supporting/negative_findings/contradictions --
+    even though ResolvedEvidence still carries *some* row for a conflicted
+    group (see resolve_current_state's docstring), that row was not
+    responsibly chosen as "current" and must not be silently counted as if
+    it were.
 
     Does not call validate_row(): matrix-building and row-validity are
     separate concerns. A caller who only wants validated rows should
@@ -75,12 +87,12 @@ def build_evidence_matrix(rows: Iterable[EvidenceRow]) -> dict[str, ClaimMatrixE
     """
     resolved = resolve_current_state(rows)
 
-    grouped: dict[str, list[ResolvedEvidence]] = {}
-    for (_, claim_id), entry in resolved.items():
-        grouped.setdefault(claim_id, []).append(entry)
+    grouped: dict[ClaimKey, list[ResolvedEvidence]] = {}
+    for (case_id, track_id, _document, claim_id), entry in resolved.items():
+        grouped.setdefault((case_id, track_id, claim_id), []).append(entry)
 
-    matrix: dict[str, ClaimMatrixEntry] = {}
-    for claim_id, entries in grouped.items():
+    matrix: dict[ClaimKey, ClaimMatrixEntry] = {}
+    for (case_id, track_id, claim_id), entries in grouped.items():
         supporting: list[ResolvedEvidence] = []
         negative_findings: list[ResolvedEvidence] = []
         contradictions: list[ResolvedEvidence] = []
@@ -101,7 +113,9 @@ def build_evidence_matrix(rows: Iterable[EvidenceRow]) -> dict[str, ClaimMatrixE
             else:
                 unresolved.append(entry)
 
-        matrix[claim_id] = ClaimMatrixEntry(
+        matrix[(case_id, track_id, claim_id)] = ClaimMatrixEntry(
+            case_id=case_id,
+            track_id=track_id,
             claim_id=claim_id,
             supporting=tuple(supporting),
             negative_findings=tuple(negative_findings),

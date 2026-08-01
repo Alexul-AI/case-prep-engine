@@ -12,11 +12,21 @@ REAL_REGISTER_CSV = (
 )
 
 
+def mkey(claim_id: str) -> tuple[str, str, str]:
+    """Matches helpers.make_row's default case_id/track_id."""
+    return ("personal", "test_track", claim_id)
+
+
+def real_key(claim_id: str) -> tuple[str, str, str]:
+    """Matches the real register's default (no case_id/track_id columns)."""
+    return ("personal", "takana9_ptsd_ms", claim_id)
+
+
 class BuildEvidenceMatrixTests(unittest.TestCase):
     def test_single_supporting_row(self):
         row = make_row(claim_id="C08", source_ref="doc-1")
         matrix = build_evidence_matrix([row])
-        entry = matrix["C08"]
+        entry = matrix[mkey("C08")]
         self.assertTrue(entry.has_support)
         self.assertFalse(entry.has_contradiction)
         self.assertFalse(entry.has_negative_finding)
@@ -27,7 +37,7 @@ class BuildEvidenceMatrixTests(unittest.TestCase):
         a = make_row(claim_id="C09", source_ref="doc-a")
         b = make_row(claim_id="C09", source_ref="doc-b")
         matrix = build_evidence_matrix([a, b])
-        self.assertEqual(len(matrix["C09"].supporting), 2)
+        self.assertEqual(len(matrix[mkey("C09")].supporting), 2)
 
     def test_support_and_contradiction_both_surface_for_the_same_claim(self):
         # A claim can have a document that supports it AND a document that
@@ -41,7 +51,7 @@ class BuildEvidenceMatrixTests(unittest.TestCase):
             payload_type="contradiction",
         )
         matrix = build_evidence_matrix([support, contradiction])
-        entry = matrix["C05"]
+        entry = matrix[mkey("C05")]
         self.assertTrue(entry.has_support)
         self.assertTrue(entry.has_contradiction)
         self.assertEqual(len(entry.supporting), 1)
@@ -55,7 +65,7 @@ class BuildEvidenceMatrixTests(unittest.TestCase):
             payload_type="negative_finding",
         )
         matrix = build_evidence_matrix([row])
-        self.assertTrue(matrix["C10"].has_negative_finding)
+        self.assertTrue(matrix[mkey("C10")].has_negative_finding)
 
     def test_blocked_row_is_unresolved_not_supporting(self):
         row = make_row(
@@ -71,7 +81,7 @@ class BuildEvidenceMatrixTests(unittest.TestCase):
             source_ref="unknown",
         )
         matrix = build_evidence_matrix([row])
-        entry = matrix["C01"]
+        entry = matrix[mkey("C01")]
         self.assertFalse(entry.has_support)
         self.assertEqual(len(entry.unresolved), 1)
 
@@ -95,10 +105,21 @@ class BuildEvidenceMatrixTests(unittest.TestCase):
             output_gate="allowed_as_quote",
         )
         matrix = build_evidence_matrix([a, b])
-        entry = matrix["C04"]
+        entry = matrix[mkey("C04")]
         self.assertTrue(entry.has_unresolved_conflict)
         self.assertFalse(entry.has_support)
         self.assertEqual(len(entry.conflicts), 1)
+
+    # --- regression: case/track scoping ---
+    def test_same_claim_id_in_different_cases_produces_separate_entries(self):
+        alex = make_row(case_id="alex_personal", claim_id="C01", source_ref="doc-1")
+        brother = make_row(case_id="brother_case", claim_id="C01", source_ref="doc-1")
+        matrix = build_evidence_matrix([alex, brother])
+        self.assertEqual(len(matrix), 2)
+        self.assertIn(("alex_personal", "test_track", "C01"), matrix)
+        self.assertIn(("brother_case", "test_track", "C01"), matrix)
+        self.assertTrue(matrix[("alex_personal", "test_track", "C01")].has_support)
+        self.assertTrue(matrix[("brother_case", "test_track", "C01")].has_support)
 
 
 @unittest.skipUnless(
@@ -114,11 +135,11 @@ class RealRegisterEvidenceMatrixTests(unittest.TestCase):
         # one claim), C04 (16.07.2025 protocol), C14/C15 (Greenhouse) are
         # all real, verified quotes as of the current register.
         for claim_id in ("C08", "C09", "C04", "C14", "C15"):
-            self.assertIn(claim_id, matrix)
-            self.assertTrue(matrix[claim_id].has_support, claim_id)
+            self.assertIn(real_key(claim_id), matrix)
+            self.assertTrue(matrix[real_key(claim_id)].has_support, claim_id)
 
         # C09 specifically has two independent supporting documents.
-        self.assertEqual(len(matrix["C09"].supporting), 2)
+        self.assertEqual(len(matrix[real_key("C09")].supporting), 2)
 
         # C01 (Rambam 2009 + IDF injury report): both rows are needs_ocr/
         # blocked and must never show up as support. This used to land in
@@ -128,10 +149,10 @@ class RealRegisterEvidenceMatrixTests(unittest.TestCase):
         # now fixed (each row has its own real Drive fileId, the note moved
         # to source_note). Two genuinely separate unresolved documents now
         # resolve as two separate, non-conflicting entries.
-        self.assertIn("C01", matrix)
-        self.assertFalse(matrix["C01"].has_support)
-        self.assertFalse(matrix["C01"].has_unresolved_conflict)
-        self.assertEqual(len(matrix["C01"].unresolved), 2)
+        self.assertIn(real_key("C01"), matrix)
+        self.assertFalse(matrix[real_key("C01")].has_support)
+        self.assertFalse(matrix[real_key("C01")].has_unresolved_conflict)
+        self.assertEqual(len(matrix[real_key("C01")].unresolved), 2)
 
 
 if __name__ == "__main__":

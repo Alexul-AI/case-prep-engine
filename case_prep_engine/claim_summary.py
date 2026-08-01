@@ -59,8 +59,17 @@ class ClaimSummaryRequest:
     """Everything an LLM (or a human) needs to summarize one claim, and
     nothing else -- no raw ungated evidence, no other claims' evidence, no
     access to documents this entry didn't already resolve as relevant.
+
+    case_id/track_id are carried for bookkeeping/traceability (so a saved
+    request.json from export-claim-prompt records which case and track it
+    came from) -- they are deliberately NOT referenced in
+    build_claim_summary_prompt()'s rendered text below. A model summarizing
+    one claim doesn't need to reason about case/track scoping; claim_id is
+    already unique within whatever this request represents.
     """
 
+    case_id: str
+    track_id: str
     claim_id: str
     supporting: tuple[EvidencePayload, ...]
     negative_findings: tuple[EvidencePayload, ...]
@@ -71,6 +80,8 @@ class ClaimSummaryRequest:
 
 def build_claim_summary_request(entry: ClaimMatrixEntry) -> ClaimSummaryRequest:
     return ClaimSummaryRequest(
+        case_id=entry.case_id,
+        track_id=entry.track_id,
         claim_id=entry.claim_id,
         supporting=tuple(r.row.payload for r in entry.supporting),
         negative_findings=tuple(r.row.payload for r in entry.negative_findings),
@@ -99,6 +110,8 @@ def request_to_dict(request: ClaimSummaryRequest) -> dict:
 
 def request_from_dict(data: dict) -> ClaimSummaryRequest:
     return ClaimSummaryRequest(
+        case_id=data["case_id"],
+        track_id=data["track_id"],
         claim_id=data["claim_id"],
         supporting=tuple(EvidencePayload(**p) for p in data["supporting"]),
         negative_findings=tuple(EvidencePayload(**p) for p in data["negative_findings"]),
