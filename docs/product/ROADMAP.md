@@ -175,18 +175,40 @@ that was blocking this is closed — re-classification can proceed:
 
 ## Deferred (planned, not started, in this order)
 
-1. Real LLM provider (env-driven, explicit `--provider` flag, consent
+1. **Structured risk coverage for `validate_claim_summary()`** (identified
+   2026-08-01, during the `claim_link_caveat` PR's own review) — every
+   "a risk must be disclosed" rule in the validator (unresolved conflict,
+   contradiction, negative finding, and now `claim_link_caveat`) currently
+   checks only that `must_not_say`/`open_risks` is *non-empty*, not that
+   its content is actually about *that* risk. Confirmed empirically (not
+   just reasoned): a `must_not_say` written for one risk factor silently
+   satisfies the emptiness check for an unrelated one in the same request.
+   Not a regression from any single PR — every risk-disclosure rule has
+   shared this limitation since `ContradictionConflictAndMustNotSayTests`
+   first shipped; the caveat rule is consistent with it, not worse.
+   Deliberately not fixed with an LLM-based semantic judge (out of scope
+   for a mechanically-checkable validator) — the fix is structural:
+   represent each required disclosure as an explicit token (e.g.
+   `unresolved_conflict`, `contradiction_present`, `negative_finding_present`,
+   `` `claim_link_caveat:<payload_hash>` ``), add `required_disclosures` to
+   `ClaimSummaryRequest`/the prompt, and require the response to name which
+   ones it covered (`covered_risks`) rather than trusting freeform-field
+   non-emptiness. Sequenced **before** item 2 (real provider) on purpose —
+   a provider integration is exactly where a model could start writing
+   generic, risk-non-specific boilerplate that passes today's non-emptiness
+   checks without actually engaging with the specific risk.
+2. Real LLM provider (env-driven, explicit `--provider` flag, consent
    gate before first real call, timeout/retry, `--save-raw-response`) —
    waiting on real-model output from the manual bridge first, to learn
    whether the current prompt/schema contract actually holds up before
    building automation around it.
-2. `narrative_timeline_summary` — an LLM layer over `timeline.py`,
+3. `narrative_timeline_summary` — an LLM layer over `timeline.py`,
    deliberately after the provider exists and after claim-level summaries
    have a track record, for the same causal-storytelling-risk reason
    `timeline.py` itself stayed separate from the matrix.
-3. `committee_brief` generator — assembles validated claim summaries into
+4. `committee_brief` generator — assembles validated claim summaries into
    an actual packet, only once the pieces under it are trusted.
-4. Phase 2 packaging decision (Claude-Code-per-person vs. a real
+5. Phase 2 packaging decision (Claude-Code-per-person vs. a real
    installable app) — revisit once Phase 1 is genuinely done, not before.
 
 ## Explicitly not doing
