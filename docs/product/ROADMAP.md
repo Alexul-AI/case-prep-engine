@@ -5,7 +5,7 @@ what the product is/for whom/scope — this file is only "where things
 stand and what's next"). Mirrors the `docs/product/ROADMAP.md` convention
 used in the author's other repos — read this before proposing new work.
 
-## Architecture built so far (2026-07-30 → 2026-08-01, 162 tests)
+## Architecture built so far (2026-07-30 → 2026-10-02, 170 tests)
 
 Each stage below was built directly on the previous one, in order, and
 each one deliberately stayed *simpler* than the temptation to skip ahead
@@ -134,6 +134,29 @@ each one deliberately stayed *simpler* than the temptation to skip ahead
     regenerated (shared "Status meaning"/hard-rules text changed for every
     prompt, not only caveat-carrying ones) plus one new fixture
     (`claim_link_caveat.txt`) for the new scenario.
+13. **First independent audit round (2026-10-02)** — a second engineer
+    (Codex) audited a real, private staging register against
+    its source PDFs and the code; each finding was re-verified before
+    acting (some were confirmed, one was wrong, and the audit itself missed
+    one real defect — see below). Code fixed in this round: (a)
+    `source_location` was a field on `EvidencePayload` but not a CSV column,
+    so *every* CSV-imported row silently lost its page/place — now imported
+    (never rendered into a prompt, not part of `payload_hash`/`evidence_id`);
+    (b) `parse_claim_summary_json` coerced with `tuple()`/`str()`, so a
+    string where an array belonged (`"open_risks": "not-an-array"`) became a
+    tuple of characters and satisfied the "risk must be disclosed" checks —
+    now strict JSON types, rejecting wrong shapes. Process lessons worth
+    keeping: **a "verbatim" quote is only as good as its extraction path** —
+    scanned PDFs carry OCR text with its own errors, and Drive's text API
+    returned some born-digital PDFs in visual (reversed) order, which a
+    manual reassembly then had to guess at; extracting the local PDF's text
+    layer directly (PyMuPDF) gives logical order and allows a mechanical,
+    whitespace-insensitive "is this quote really in the source" check
+    (justified-layout artifacts such as a displaced final letter still need
+    a visual check). And an auditor's table is not itself verified: two
+    quotes were corrected from it, a third (non-verbatim word order) it
+    missed, and one proposed "correction" would have *introduced* an error
+    into a quote that matched the scan.
 
 ## Design rules that have held since day one
 
@@ -197,6 +220,32 @@ that was blocking this is closed — re-classification can proceed:
    a provider integration is exactly where a model could start writing
    generic, risk-non-specific boilerplate that passes today's non-emptiness
    checks without actually engaging with the specific risk.
+1b. **Known gaps from the 2026-10-02 audit, confirmed by minimal
+   reproduction, deliberately not fixed in that round** (each is a
+   separate, reviewable change; (a)-(c) belong before item 2):
+   (a) `staleness_status` is stored and documented
+   (`fresh`/`stale`/`conflict_detected`/`superseded`) but nothing reads it —
+   `validate_row`, the matrix, and the prompt all ignore `stale`, so a
+   stale supporting row still reads as clean support. Needs a real gate
+   plus a settled meaning for each value (and the register's own free-text
+   values, e.g. `stale_by_default_no_check_yet`, normalized).
+   (b) `claim_link_caveat` is only enforced on *supporting* evidence; a
+   caveat on a contradiction/negative finding is rendered but need not be
+   disclosed. Fold into item 1's required-disclosure tokens.
+   (c) The model never sees a claim's *statement* — the prompt carries only
+   `claim_id` plus evidence, so a narrowly-scoped claim definition kept in
+   notes is invisible to it. Today's workaround is a `claim_link_caveat`
+   per row; a `claim_text` on the request is the structural fix.
+   (d) A caveat-only edit to an existing row has no timestamp of its own:
+   `resolve_current_state` orders by `payload.verified_utc`, so two rows for
+   one quote that differ only in caveat and share a verification date
+   resolve as a *conflict*. Fine while registers are edited in place (the
+   current practice); matters once the append-only store is the real
+   history.
+   (e) Frozen request JSON written before `5c19b5b` is rejected with a bare
+   `KeyError('payload')`. Frozen requests are per-session artifacts
+   (regenerate with `export-claim-prompt`), so no migration is planned —
+   at most a clearer error message.
 2. Real LLM provider (env-driven, explicit `--provider` flag, consent
    gate before first real call, timeout/retry, `--save-raw-response`) —
    waiting on real-model output from the manual bridge first, to learn
