@@ -508,6 +508,55 @@ class RegisterHasExplicitCaseTrackColumnsTests(unittest.TestCase):
             self.assertFalse(register_has_explicit_case_track_columns(path))
 
 
+class ImportCsvSourceLocationTests(unittest.TestCase):
+    """source_location (page/place in the source) must survive CSV import.
+
+    Regression: EvidencePayload always had the field, but _CSV_COLUMNS did
+    not list it, so every CSV-imported row silently had source_location ==
+    "" -- including rows from a multi-page bundle, where "which page" is
+    exactly what a reviewer needs to re-check a quote.
+    """
+
+    BASE = {
+        "document": "Doc", "source_ref": "Drive fileId x", "related_claims": "C1",
+        "text_quality_status": "text_qa_passed", "claim_support_status": "supported_by_quote",
+        "output_gate": "allowed_as_quote", "staleness_status": "fresh",
+        "verified_by_actor": "tester", "verification_method": "manual_read",
+        "verified_utc": "2026-10-02",
+    }
+
+    def _import(self, rows, extra_columns=("source_location",)):
+        columns = [*self.BASE, "evidence_payload_hebrew_verbatim", *extra_columns]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "r.csv"
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(rows)
+            return import_csv(path)
+
+    def test_source_location_is_imported_per_row(self):
+        rows = self._import([
+            {**self.BASE, "evidence_payload_hebrew_verbatim": "ציטוט א", "source_location": "page 4"},
+            {**self.BASE, "evidence_payload_hebrew_verbatim": "ציטוט ב", "source_location": "page 5"},
+        ])
+        self.assertEqual([r.payload.source_location for r in rows], ["page 4", "page 5"])
+
+    def test_missing_source_location_column_imports_as_empty(self):
+        rows = self._import(
+            [{**self.BASE, "evidence_payload_hebrew_verbatim": "ציטוט א"}], extra_columns=()
+        )
+        self.assertEqual(rows[0].payload.source_location, "")
+
+    def test_source_location_is_not_part_of_payload_hash_or_evidence_id(self):
+        a, b = self._import([
+            {**self.BASE, "evidence_payload_hebrew_verbatim": "ציטוט א", "source_location": "page 1"},
+            {**self.BASE, "evidence_payload_hebrew_verbatim": "ציטוט א", "source_location": "page 2"},
+        ])
+        self.assertEqual(a.payload.payload_hash, b.payload.payload_hash)
+        self.assertEqual(a.evidence_id, b.evidence_id)
+
+
 @unittest.skipUnless(
     REAL_REGISTER_CSV.exists(),
     "real case register (data/, gitignored) not present on this machine",

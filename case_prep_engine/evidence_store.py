@@ -572,6 +572,7 @@ _CSV_COLUMNS = [
     "track",
     "priority_in_track",
     "claim_link_caveat",
+    "source_location",
 ]
 
 # Columns whose presence in the CSV header signals "this register has been
@@ -616,6 +617,12 @@ def import_csv(path: str | Path) -> list[EvidenceRow]:
     EvidencePayload -- see EvidenceRow's docstring for why. claim_link_caveat
     is blank by default (most rows have none) -- see EvidenceRow's own
     docstring for what it means and how it differs from source_note.
+
+    source_location (e.g. "page 4") is optional and, like source_note, is
+    never rendered into a prompt -- it exists so a quote can be re-checked
+    against its exact place in the source. It is part of neither
+    payload_hash nor evidence_id (it locates the text, it isn't the text).
+    A CSV that predates this column imports with an empty location.
     """
     rows: list[EvidenceRow] = []
     with open(path, encoding="utf-8-sig", newline="") as handle:
@@ -631,6 +638,7 @@ def import_csv(path: str | Path) -> list[EvidenceRow]:
                 verification_method=values["verification_method"],
                 verified_by_actor=values["verified_by_actor"],
                 verified_utc=values["verified_utc"],
+                source_location=values["source_location"],
                 source_note=values["source_note"],
             )
             for claim_id in _split_claim_ids(values["related_claims"]):
