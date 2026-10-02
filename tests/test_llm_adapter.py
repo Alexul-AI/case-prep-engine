@@ -137,6 +137,49 @@ class ParseClaimSummaryJsonTests(unittest.TestCase):
         summary = parse_claim_summary_json(raw, self.request)
         self.assertEqual(summary.status, "supported")
 
+    # --- strict JSON types: a string is not an array, a number is not text ---
+    def _raw(self, **overrides):
+        base = {
+            "claim_id": "C99",
+            "status": "supported",
+            "summary_he": "קיימת זיקה סיבתית בהסתברות גבוהה",
+            "citations": [self.hash],
+        }
+        base.update(overrides)
+        return json.dumps(base)
+
+    def test_string_instead_of_array_is_rejected_not_split_into_characters(self):
+        # Regression: tuple("not-an-array") == ('n', 'o', 't', ...) used to
+        # be accepted, and a non-empty open_risks then satisfied every
+        # "risk must be disclosed" check with meaningless characters.
+        for field in ("allowed_uses", "must_not_say", "citations", "open_risks"):
+            with self.subTest(field=field):
+                with self.assertRaises(LLMResponseError) as ctx:
+                    parse_claim_summary_json(self._raw(**{field: "not-an-array"}), self.request)
+                self.assertIn(field, str(ctx.exception))
+
+    def test_array_with_non_string_items_is_rejected(self):
+        with self.assertRaises(LLMResponseError):
+            parse_claim_summary_json(self._raw(open_risks=["ok", 5]), self.request)
+        with self.assertRaises(LLMResponseError):
+            parse_claim_summary_json(self._raw(must_not_say=[["nested"]]), self.request)
+
+    def test_null_array_is_rejected(self):
+        with self.assertRaises(LLMResponseError):
+            parse_claim_summary_json(self._raw(open_risks=None), self.request)
+
+    def test_non_string_scalar_fields_are_rejected_not_stringified(self):
+        for field, value in (("claim_id", 99), ("status", ["supported"]), ("summary_he", None), ("summary_ru", 7)):
+            with self.subTest(field=field):
+                with self.assertRaises(LLMResponseError) as ctx:
+                    parse_claim_summary_json(self._raw(**{field: value}), self.request)
+                self.assertIn(field, str(ctx.exception))
+
+    def test_omitted_optional_fields_still_default_to_empty(self):
+        summary = parse_claim_summary_json(self._raw(), self.request)
+        self.assertEqual(summary.open_risks, ())
+        self.assertEqual(summary.summary_ru, "")
+
 
 class JsonOnlyClaimSummaryLLMTests(unittest.TestCase):
     def test_happy_path_round_trip(self):

@@ -28,6 +28,7 @@ class LLMResponseError(Exception):
 
 
 _REQUIRED_STRING_FIELDS = ("claim_id", "status", "summary_he")
+_ARRAY_OF_STRING_FIELDS = ("allowed_uses", "must_not_say", "citations", "open_risks")
 
 
 def parse_claim_summary_json(raw: str, request: ClaimSummaryRequest) -> ClaimSummary:
@@ -66,21 +67,40 @@ def parse_claim_summary_json(raw: str, request: ClaimSummaryRequest) -> ClaimSum
             f"response JSON is missing required field(s): {missing}", raw_response=raw
         )
 
-    try:
-        summary = ClaimSummary(
-            claim_id=str(data["claim_id"]),
-            status=str(data["status"]),
-            summary_he=str(data["summary_he"]),
-            summary_ru=str(data.get("summary_ru", "")),
-            allowed_uses=tuple(data.get("allowed_uses", ())),
-            must_not_say=tuple(data.get("must_not_say", ())),
-            citations=tuple(data.get("citations", ())),
-            open_risks=tuple(data.get("open_risks", ())),
-        )
-    except TypeError as exc:
-        raise LLMResponseError(
-            f"response JSON has a misshapen field: {exc}", raw_response=raw
-        ) from exc
+    # Strict JSON types, not Python coercion: str(x)/tuple(x) would turn a
+    # list into its repr, or a string ("not-an-array") into a tuple of its
+    # characters, and then let that satisfy the "non-empty" risk checks in
+    # validate_claim_summary().
+    string_values: dict[str, str] = {}
+    for name in (*_REQUIRED_STRING_FIELDS, "summary_ru"):
+        value = data.get(name, "" if name == "summary_ru" else None)
+        if not isinstance(value, str):
+            raise LLMResponseError(
+                f"response JSON field {name!r} must be a string, got {type(value).__name__}",
+                raw_response=raw,
+            )
+        string_values[name] = value
+
+    array_values: dict[str, tuple[str, ...]] = {}
+    for name in _ARRAY_OF_STRING_FIELDS:
+        value = data.get(name, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise LLMResponseError(
+                f"response JSON field {name!r} must be an array of strings",
+                raw_response=raw,
+            )
+        array_values[name] = tuple(value)
+
+    summary = ClaimSummary(
+        claim_id=string_values["claim_id"],
+        status=string_values["status"],
+        summary_he=string_values["summary_he"],
+        summary_ru=string_values["summary_ru"],
+        allowed_uses=array_values["allowed_uses"],
+        must_not_say=array_values["must_not_say"],
+        citations=array_values["citations"],
+        open_risks=array_values["open_risks"],
+    )
 
     problems = validate_claim_summary(summary, request)
     if problems:
